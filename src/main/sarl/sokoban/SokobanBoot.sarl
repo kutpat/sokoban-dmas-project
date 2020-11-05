@@ -1,0 +1,45 @@
+package sokoban
+
+import sokoban.environment.^agent.Environment
+import sokoban.ui.sokobanGUI
+import io.sarl.api.core.Initialize
+import io.sarl.api.core.Lifecycle
+
+/** 
+ * Launcher of the simulation framework.
+ * 
+ * This launcher needs the {@link http://www.janusproject.io Janus platform}.
+ * 
+ * @author St&eacute;phane GALLAND &lt;stephane.galland@utbm.fr&gt;
+ * @version $Name$ $Revision$ $Date$
+ */
+agent SokobanBoot {
+
+	uses Lifecycle
+
+	/** Width of the world (in number of cells).
+	 */
+	val WIDTH = 5
+
+	/** Height of the world (in number of cells).
+	 */
+	val HEIGHT = 5
+
+	/** Number of ghosts at the start-up.
+	 */
+	val NB_GHOSTS = 1
+	
+	/** Percpetion distance for the agents (usually the ghosts).
+	 */
+	val PERCEPTION_DISTANCE = 5
+	
+	/** The UI will force the environment agent to wait for it.
+	 */
+	val WAITING_DURATION = 500
+
+	on Initialize {
+		var ui = new sokobanGUI(WAITING_DURATION)
+
+		spawn(typeof(Environment), WIDTH, HEIGHT, NB_GHOSTS, PERCEPTION_DISTANCE, ui)
+	}
+}

@@ -1,0 +1,404 @@
+/* 
+ * $Id$
+ * 
+ * Copyright (c) 2015-17 Stephane GALLAND.
+ * 
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ * 
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ * 
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * This program is free software; you can redistribute it and/or modify
+ */
+// Submission from: Can Taylan Kutbay; 25-0776
+package sokoban.environment.^agent
+
+import framework.math.Point2i
+import framework.math.Vector2i
+import sokoban.environment.maze.AgentBody
+import sokoban.environment.maze.Direction
+import sokoban.environment.maze.GhostBody
+import sokoban.environment.maze.Maze
+import sokoban.environment.maze.sokobanBody
+import sokoban.environment.maze.sokobanObject
+import sokoban.environment.maze.PillObject
+import sokoban.environment.maze.SuperPowerAccessor
+import io.sarl.api.core.Behaviors
+import io.sarl.api.core.DefaultContextInteractions
+import io.sarl.lang.core.DefaultSkill
+import java.util.BitSet
+import java.util.List
+import java.util.Map
+import java.util.Random
+import java.util.TreeMap
+import java.util.UUID
+import java.util.ArrayList
+
+/** Capacity to manage a maze.
+ * 
+ * @author $Author: sgalland$
+ * @version $FullVersion$
+ * @mavengroupid $GroupId$
+ * @mavenartifactid $ArtifactId$
+ */
+capacity MazeManager {
+	
+	/** Replies the number of bodies in the maze */
+	def getBodyCount : int
+	
+	/** Apply the list of actions.
+	 * @return true if the sokoban is dead. */
+	def applyActions(actions : List<MazeChangeQuery>) : boolean
+	
+	/** Replies the perceptions. */
+	def getPerceptions : Map<AgentBody, List<sokobanObject>>
+	
+	/** Replies the width of the maze. */
+	def getMazeWidth : int
+
+	/** Replies the height of the maze. */
+	def getMazeHeight : int
+	
+	/** Replies all the objects. */
+	def getsokobanObjects : List<sokobanObject>
+
+	/** Replies a specific body. */
+	def getAgentBody(id : UUID) : AgentBody
+	
+	/** Replies super power accessor. */
+	def getSuperPowerAccessor(id : UUID) : SuperPowerAccessor
+
+	/** Create a ghost body. */
+	def createGhost(perceptionDistance : int) : GhostBody
+
+	/** Create a sokoban body. */
+	def createsokoban() : sokobanBody
+
+}
+
+/** Capacity to be the front-end for the maze.
+ * 
+ * @author $Author: sgalland$
+ * @version $FullVersion$
+ * @mavengroupid $GroupId$
+ * @mavenartifactid $ArtifactId$
+ */
+capacity MazeFrontEnd {
+	
+	def sendPerception(time : int, bodyID : UUID, objects : List<sokobanObject>, position : Point2i)
+
+}
+
+/** Capacity to move in the maze.
+ * 
+ * @author $Author: sgalland$
+ * @version $FullVersion$
+ * @mavengroupid $GroupId$
+ * @mavenartifactid $ArtifactId$
+ */
+@DefaultSkill(typeof(DefaultMazeMotionSkill))
+capacity MazeMotion {
+	
+	def move(direction : Direction)
+
+}
+
+/** Skill for managing a maze.
+ * 
+ * @author $Author: sgalland$
+ * @version $FullVersion$
+ * @mavengroupid $GroupId$
+ * @mavenartifactid $ArtifactId$
+ */
+skill DefaultMazeManagerSkill implements MazeManager {
+	
+	val random = new Random
+	
+	val width : int
+	val height : int
+	
+	var maze : Maze
+	
+	new (width : int, height : int) {
+		this.width = width
+		this.height = height
+	}
+	
+	def install {
+		this.maze = new Maze(this.width, this.height)
+	}
+	
+	def uninstall {
+		this.maze = null
+	}
+	
+	def getBodyCount : int {
+		this.maze.bodyCount
+	}
+
+	def applyActions(actions : List<MazeChangeQuery>) : boolean {
+
+		//System.out.println("eee")
+
+		
+		var lastActions = new TreeMap<UUID, Direction>
+		for (action : actions) {
+			
+			lastActions.put(action.emitter, action.change)
+		}
+
+		var sokobanDead = false
+
+		val objects = getsokobanObjects
+		var sokoban : sokobanBody = null
+		val ghosts = new ArrayList<GhostBody>
+		for (o : objects) {
+			if (o instanceof sokobanBody) {
+				sokoban = (o as sokobanBody)
+			} else if (o instanceof GhostBody) {
+				ghosts += (o as GhostBody)
+			}
+		}
+
+		// Apply moves for each body that emitted an action
+		for (entry : lastActions.entrySet) {
+        val body = getAgentBody(entry.key)
+			if (body !== null) {
+				val pos = body.position
+				var nx = pos.x
+				var ny = pos.y
+				switch (entry.value) {
+					case Direction::NORTH: ny--
+					case Direction::SOUTH: ny++
+					case Direction::WEST: nx--
+					case Direction::EAST: nx++
+					default: {
+					}
+				}
+				// maze bounds
+				if(nx < 0) nx = 0
+            if (ny < 0) ny = 0
+            if (nx >= this.width) nx = this.width - 1
+            if (ny >= this.height) ny = this.height - 1
+				// Update the body position
+				maze.setObjectAt(nx, ny, body)
+			}
+		}
+
+		// Collision with ghosts
+    if (sokoban !== null) {
+			for (g : ghosts) {
+            if (g.position.equals(sokoban.position)) {
+					sokobanDead = true
+                break
+				}
+			}
+		}
+
+		return sokobanDead
+}
+	
+	def in(v : int, r : IntegerRange) : boolean {
+		r.contains(v)
+	}
+
+	// My Helpers
+	def isInside(x : int, y : int) : boolean {
+		return (x >= 0 && y >= 0 && x < this.width && y < this.width)
+	}
+
+	def cellIsOccluder(x : int, y : int) : boolean {
+		var cellContent = this.maze.getObjectAt(x, y)
+		return cellContent.isOccluder
+	}
+	
+	def getPerceptions : Map<AgentBody, List<sokobanObject>> {
+		//System.out.println("ddd")
+		var perceptions = new TreeMap
+		
+		var bodies : List<AgentBody>
+		if(bodies === null){
+			return perceptions
+		}
+		// I implemented an algorithm to see which objects are within distance d and one direction (and no walls in between)
+		// Like a "Line of Sight"
+		
+		// P.S: I purposely did not use the method shown in lecture. 
+		// The algorithm from the lecture is for sure more efficient but I wanted to do better than copy paste! :)
+		for(b : bodies){
+			var seen = new ArrayList<sokobanObject>
+			var bp = b.position
+			var d = b.perceptionDistance
+			
+			if(d > 0){
+				for (o: bodies){
+					if (o !== b){
+						val op = o.position
+						val dx = Math::abs(op.x - bp.x)
+						val dy = Math::abs(op.y - bp.y)
+						
+						var visible = false
+						
+						// If there is an object on the x-axis
+						if (dy==0 && dx <= d){
+							val stepX = (dx > 0) ? 1 : -1 //step direction
+							var x = bp.x + stepX
+							var y = bp.y
+							visible = true
+							
+							// go to the object
+							while(x != op.x){
+								if(!isInside(x, y) || cellIsOccluder(x,y)){
+									visible = false
+									break
+								}
+								x += stepX
+							}
+						}
+
+						// If there is an object on the y-axis
+						if (dx == 0 && dy <= d) {
+							val stepY = (dy > 0) ? 1 : -1 // step direction
+							var x = bp.x
+							var y = bp.y + stepY
+							visible = true
+
+							// go to the object
+							while (y != op.y) {
+								if (!isInside(x, y) || cellIsOccluder(x, y)) {
+									visible = false
+									break
+								}
+								y += stepY
+							}
+						}
+						
+						if(visible){
+							seen += o
+						}
+						
+					}
+				}
+			}
+			
+			
+			perceptions.put(b, seen)
+		}
+		
+		
+		return perceptions
+	}
+	
+	
+	
+	
+	
+	
+	def getMazeHeight : int {
+		this.height
+	}
+	
+	def getMazeWidth : int {
+		this.width
+	}
+	
+	def getsokobanObjects : List<sokobanObject> {
+		var list = newArrayList
+		for (i : 0..<this.width) {
+			for (j : 0..<this.height) {
+				var o = this.maze.getObjectAt(i, j)
+				if (o !== null) {
+					list += o
+				}
+			}
+		}
+		return list
+	}
+	
+	def getAgentBody(id : UUID) : AgentBody {
+		this.maze.getAgentBody(id)
+	}
+
+	def getSuperPowerAccessor(id : UUID) : SuperPowerAccessor {
+		this.maze.getSuperPowerAccessorFor(id)
+	}
+
+	def createGhost(perceptionDistance : int) : GhostBody {
+		this.maze.createBody(typeof(GhostBody), null, perceptionDistance);
+	}
+	
+	def createsokoban : sokobanBody {
+		this.maze.createBody(typeof(sokobanBody), null, 0);
+	}
+	
+}
+
+/** Skill for being the front-end of a maze.
+ * 
+ * @author $Author: sgalland$
+ * @version $FullVersion$
+ * @mavengroupid $GroupId$
+ * @mavenartifactid $ArtifactId$
+ */
+skill DefaultMazeFrontEndSkill implements MazeFrontEnd {
+	
+	uses DefaultContextInteractions, Behaviors
+	
+	var mazeSpace : MazeSpace
+	
+	def install {
+		var spaceId = MazeSpaceUtils.getSpaceIDInContext(defaultContext)
+		this.mazeSpace = defaultContext.getOrCreateSpaceWithSpec(typeof(MazeSpaceSpecification), spaceId,
+			defaultSpace, asEventListener)
+	}
+	
+	def sendPerception(time : int, bodyID : UUID, objects : List<sokobanObject>, position : Point2i) {
+		var p = new Perception(time, bodyID, objects, position)
+		this.mazeSpace.notifyPerception(owner.ID, p)
+	}
+	
+}
+
+/** Default implementation of the MazeMotion capacity.
+ * 
+ * @author $Author: sgalland$
+ * @version $FullVersion$
+ * @mavengroupid $GroupId$
+ * @mavenartifactid $ArtifactId$
+ */
+skill DefaultMazeMotionSkill implements MazeMotion {
+	
+	uses DefaultContextInteractions, Behaviors
+	
+	var ^space : MazeSpace
+	
+	var binder : SkillBinder
+	
+	def install {
+		var dc = defaultContext
+		var spaceId = MazeSpaceUtils::getSpaceIDInContext(dc)
+		this.^space = dc.getSpace(spaceId)
+		while (^space === null) {
+			// wait for the creation of the space
+		}
+		this.binder = new SkillBinder(asEventListener, owner.ID)
+		this.^space.spawnBody(this.binder)
+	}
+	
+	def uninstall {
+		this.^space.killBody(this.binder)
+	}
+	
+	def move(direction : Direction) {
+		this.^space.influence(this.binder.currentTime, this.binder.ID, direction)
+	}
+
+}

@@ -1,0 +1,174 @@
+/* 
+ * $Id$
+ * 
+ * Copyright (c) 2015-17 Stephane GALLAND.
+ * 
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ * 
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ * 
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * This program is free software; you can redistribute it and/or modify
+ */
+package sokoban.environment.^agent
+
+import framework.math.Point2i
+import sokoban.environment.maze.sokobanObject
+import sokoban.players.Ghost
+import io.sarl.api.core.DefaultContextInteractions
+import io.sarl.api.core.Destroy
+import io.sarl.api.core.Initialize
+import io.sarl.api.core.Lifecycle
+import java.util.Collections
+import java.util.TreeMap
+import java.util.logging.Logger
+
+/** Definition of the agent that is managing the environment.
+ * 
+ * @author $Author: sgalland$
+ * @version $FullVersion$
+ * @mavengroupid $GroupId$
+ * @mavenartifactid $ArtifactId$
+ */
+agent Environment {
+
+	uses MazeManager, MazeFrontEnd, DefaultContextInteractions, Lifecycle
+	
+	var listeners = <EnvironmentListener>newArrayList
+	var player : Player
+	var controller : Controller
+	var time = 0
+	val actions = <MazeChangeQuery>newLinkedList
+
+	@SuppressWarnings("potential_inefficient_value_conversion")
+	on Initialize {
+		var width = occurrence.parameters.get(0) as Integer
+		var height = occurrence.parameters.get(1) as Integer
+		var nbGhosts = occurrence.parameters.get(2) as Integer
+		var perceptionDistance = occurrence.parameters.get(3) as Integer
+		for (i : 4..<occurrence.parameters.size) {
+			var o = occurrence.parameters.get(i)
+			if (o instanceof EnvironmentListener) {
+				this.listeners += o
+			}
+		}
+		setSkill(new DefaultMazeManagerSkill(width, height))
+		setSkill(new DefaultMazeFrontEndSkill())
+		this.controller = new Controller(defaultSpace, defaultAddress)
+		var sokobanBody = createsokoban
+		this.player = new Player(sokobanBody.agentId, Logger::getLogger(ID.toString))
+		for (i : 0..<nbGhosts) {
+			var ghostBody = createGhost(perceptionDistance)
+			spawnInContextWithID(typeof(Ghost), ghostBody.agentId, defaultContext)
+		}
+		firePlayerBinding
+		fireControllerBinding
+		fireEnvironmentChange
+	}
+	
+	def fireEnvironmentChange {
+		var objects = new TreeMap<Point2i, sokobanObject>
+		for (obj : getsokobanObjects) {
+			objects.put(obj.position, obj)
+		}
+		var ^event = new EnvironmentEvent(ID, this.time, mazeWidth, mazeHeight, Collections::unmodifiableMap(objects))
+		for (listener : this.listeners) {
+			listener.environmentChanged(^event)
+		}
+	}
+	
+	def firePlayerBinding {
+		for (listener : this.listeners) {
+			listener.bindPlayer(this.player)
+		}
+	}
+
+	def firePlayerUnbinding {
+		for (listener : this.listeners) {
+			listener.unbindPlayer(this.player)
+		}
+	}
+
+	def fireControllerBinding {
+		for (listener : this.listeners) {
+			listener.bindController(this.controller)
+		}
+	}
+
+	def fireControllerUnbinding {
+		for (listener : this.listeners) {
+			listener.unbindController(this.controller)
+		}
+	}
+
+	def fireGameOver {
+		for (listener : this.listeners) {
+			listener.gameOver()
+		}
+	}
+
+	on Destroy {
+		firePlayerUnbinding
+		fireControllerUnbinding;
+		clearSkill(typeof(MazeManager));
+		clearSkill(typeof(MazeFrontEnd))
+	}
+	
+	on Action [occurrence.time >= time] {
+		synchronized(this) {
+			this.actions += new MazeChangeQuery(occurrence.source.ID, occurrence.direction)
+			
+			if (this.actions.size >= bodyCount - 1) {
+				emit(new RunEndOfStep) [it == defaultAddress]
+			}
+		}
+	}
+	
+	on RunEndOfStep {
+		synchronized(this) {
+			// Endogenous behavior: move the sokoban from the player's action
+			var avatarDirection = this.player.direction
+			var avatarAction = new MazeChangeQuery(this.player.bodyId, avatarDirection)
+			this.actions += avatarAction
+
+			// Endogenous behavior: decrease the super power of sokoban
+			getSuperPowerAccessor(this.player.bodyId).decreaseSuperPower
+
+			// Change the state of the universe
+			if (applyActions(this.actions)) {
+				// sokoban is dead.
+				emit(new sokobanIsDead)
+				fireGameOver
+				killMe
+			}
+			
+			// Increase time
+			this.time++
+			
+			// Notify about environment's changes
+			fireEnvironmentChange
+			
+			// Move to next step
+			emit(new RunBeginingOfStep)
+		}
+	}
+	
+	on RunBeginingOfStep {
+		synchronized(this) {
+			this.actions.clear
+			
+			for (e : getPerceptions().entrySet) {
+				sendPerception(this.time, e.key.agentId, e.value, e.key.position)
+			}
+		}
+	}
+	
+}
