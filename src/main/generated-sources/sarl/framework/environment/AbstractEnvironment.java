@@ -122,16 +122,19 @@ public abstract class AbstractEnvironment implements Environment {
   }
 
   @Override
+  @Pure
   public TimeManager getTimeManager() {
     return this.timeManager;
   }
 
   @Override
+  @Pure
   public float getWidth() {
     return this.width;
   }
 
   @Override
+  @Pure
   public float getHeight() {
     return this.height;
   }
@@ -176,6 +179,7 @@ public abstract class AbstractEnvironment implements Environment {
    * 
    * @return the bodies in the environment.
    */
+  @Pure
   public Iterable<AgentBody> getAgentBodies() {
     synchronized (this.agentBodyList) {
       return Collections.<AgentBody>unmodifiableCollection(this.agentBodyList.values());
@@ -183,6 +187,7 @@ public abstract class AbstractEnvironment implements Environment {
   }
 
   @Override
+  @Pure
   public int getAgentBodyNumber() {
     synchronized (this.agentBodyList) {
       return this.agentBodyList.size();
@@ -190,6 +195,7 @@ public abstract class AbstractEnvironment implements Environment {
   }
 
   @Override
+  @Pure
   public AgentBody getAgentBodyFor(final UUID agentId) {
     synchronized (this.agentBodyList) {
       return this.agentBodyList.get(agentId);

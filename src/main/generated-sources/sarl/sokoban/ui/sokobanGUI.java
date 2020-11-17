@@ -11,11 +11,11 @@ import java.awt.Container;
 import java.awt.Dimension;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.RenderingHints;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.KeyEvent;
 import java.awt.event.KeyListener;
-import java.awt.geom.Path2D;
 import java.net.URL;
 import java.util.Map;
 import java.util.Set;
@@ -38,7 +38,6 @@ import sokoban.environment.agent.EnvironmentListener;
 import sokoban.environment.agent.Player;
 import sokoban.environment.maze.Direction;
 import sokoban.environment.maze.GhostBody;
-import sokoban.environment.maze.PillObject;
 import sokoban.environment.maze.WallObject;
 import sokoban.environment.maze.sokobanBody;
 import sokoban.environment.maze.sokobanObject;
@@ -68,6 +67,40 @@ public class sokobanGUI extends JFrame implements KeyListener, EnvironmentListen
   @SarlElementType(10)
   @XbaseGenerated
   private static class GridPanel extends JPanel {
+    private static final Color FLOOR_BASE = new Color(224, 215, 200);
+
+    private static final Color FLOOR_NOISE1 = new Color(236, 229, 215);
+
+    private static final Color FLOOR_NOISE2 = new Color(210, 200, 184);
+
+    private static final Color WALL_BASE = new Color(125, 117, 103);
+
+    private static final Color WALL_EDGE = new Color(87, 80, 69);
+
+    private static final Color WALL_LIGHT = new Color(160, 151, 136);
+
+    private static final Color CRATE_BASE = new Color(176, 134, 84);
+
+    private static final Color CRATE_EDGE = new Color(111, 80, 42);
+
+    private static final Color CRATE_STRAP = new Color(79, 55, 31);
+
+    private static final Color GOAL_BASE = new Color(171, 206, 187);
+
+    private static final Color GOAL_RING = new Color(39, 110, 88);
+
+    private static final Color SHADOW = new Color(0, 0, 0, 45);
+
+    private static final Color WORKER_BODY = new Color(63, 116, 184);
+
+    private static final Color WORKER_OUTLINE = new Color(26, 48, 76);
+
+    private static final Color WORKER_HELMET = new Color(243, 192, 56);
+
+    private static final Color WORKER_SKIN = new Color(241, 218, 189);
+
+    private static final Color WORKER_STRAP = new Color(226, 238, 250, 140);
+
     private Map<Point2i, sokobanObject> objects;
 
     private AtomicInteger time = new AtomicInteger();
@@ -89,6 +122,7 @@ public class sokobanGUI extends JFrame implements KeyListener, EnvironmentListen
       int px = 0;
       int py = 0;
       Graphics2D g2d = ((Graphics2D) g);
+      g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
       int _get = this.time.get();
       boolean isEvenTime = ((_get % 2) == 0);
       if ((this.objects != null)) {
@@ -101,91 +135,124 @@ public class sokobanGUI extends JFrame implements KeyListener, EnvironmentListen
             px = (sokobanGUI.CELL_WIDTH * _x);
             int _y = pos.getY();
             py = (sokobanGUI.CELL_HEIGHT * _y);
+            this.drawFloor(g2d, px, py);
             if ((obj instanceof WallObject)) {
-              g2d.setColor(Color.BLUE);
-              g2d.fillRect(px, py, sokobanGUI.CELL_WIDTH, sokobanGUI.CELL_HEIGHT);
+              this.drawWall(g2d, px, py);
             } else {
               if ((obj instanceof sokobanBody)) {
-                boolean _isSupersokoban = ((sokobanBody)obj).isSupersokoban();
-                if (_isSupersokoban) {
-                  g2d.setColor(Color.MAGENTA);
-                } else {
-                  g2d.setColor(Color.YELLOW);
-                }
-                if (isEvenTime) {
-                  g2d.fillArc((px + 1), (py + 1), (sokobanGUI.CELL_WIDTH - 2), (sokobanGUI.CELL_HEIGHT - 2), 45, 270);
-                } else {
-                  g2d.fillArc((px + 1), (py + 1), (sokobanGUI.CELL_WIDTH - 2), (sokobanGUI.CELL_HEIGHT - 2), 5, 350);
-                }
-                g2d.setColor(this.getBackground());
-                int eyex = ((px + sokobanGUI.DEMI_CELL_WIDTH) - 2);
-                int eyey = ((py + (sokobanGUI.DEMI_CELL_HEIGHT / 2)) - 2);
-                if ((!isEvenTime)) {
-                  eyex++;
-                }
-                g2d.fillOval(eyex, eyey, 4, 4);
+                this.drawWorker(g2d, px, py);
               } else {
                 if ((obj instanceof GhostBody)) {
-                  g2d.setColor(Color.WHITE);
-                  g2d.fillArc((px + 3), (py + 1), (sokobanGUI.CELL_WIDTH - 6), (sokobanGUI.CELL_HEIGHT - 2), 0, 180);
-                  int up = (py + sokobanGUI.DEMI_CELL_HEIGHT);
-                  int bottom1 = ((py + sokobanGUI.CELL_HEIGHT) - 2);
-                  int bottom2 = (bottom1 - 4);
-                  int lleft = (px + 3);
-                  int left = (px + (sokobanGUI.DEMI_CELL_WIDTH / 2));
-                  int middle = (px + sokobanGUI.DEMI_CELL_WIDTH);
-                  int right = ((px + sokobanGUI.DEMI_CELL_WIDTH) + (sokobanGUI.DEMI_CELL_WIDTH / 2));
-                  int rright = ((px + sokobanGUI.CELL_WIDTH) - 3);
-                  if ((!isEvenTime)) {
-                    left--;
-                    middle = (middle - 2);
-                    bottom2 = (bottom2 + 2);
-                  }
-                  final Path2D.Float path = new Path2D.Float();
-                  path.moveTo(lleft, up);
-                  path.lineTo(lleft, bottom1);
-                  path.lineTo(left, bottom2);
-                  path.lineTo(middle, bottom1);
-                  path.lineTo(right, bottom2);
-                  path.lineTo(rright, bottom1);
-                  path.lineTo(rright, up);
-                  path.closePath();
-                  g2d.fill(path);
-                  int dx = 0;
-                  int dy = 0;
-                  int eyex_1 = (((px + sokobanGUI.DEMI_CELL_WIDTH) - 5) + dx);
-                  int eyey_1 = ((py + (sokobanGUI.DEMI_CELL_HEIGHT / 2)) + dy);
-                  g2d.setColor(this.getBackground());
-                  g2d.fillOval(eyex_1, eyey_1, 5, 5);
-                  g2d.setColor(Color.WHITE);
-                  eyex_1 = (((px + sokobanGUI.DEMI_CELL_WIDTH) + 2) + dx);
-                  g2d.setColor(this.getBackground());
-                  g2d.fillOval(eyex_1, eyey_1, 5, 5);
-                } else {
-                  if ((obj instanceof PillObject)) {
-                    boolean _isSuperPill = ((PillObject)obj).isSuperPill();
-                    if (_isSuperPill) {
-                      g2d.setColor(Color.MAGENTA);
-                      if (isEvenTime) {
-                        g2d.fillOval(((px + sokobanGUI.DEMI_CELL_WIDTH) - 4), ((py + sokobanGUI.DEMI_CELL_HEIGHT) - 4), 8, 8);
-                      } else {
-                        g2d.fillOval(((px + sokobanGUI.DEMI_CELL_WIDTH) - 5), ((py + sokobanGUI.DEMI_CELL_HEIGHT) - 5), 10, 10);
-                      }
-                    } else {
-                      g2d.setColor(Color.WHITE);
-                      if (isEvenTime) {
-                        g2d.fillOval(((px + sokobanGUI.DEMI_CELL_WIDTH) - 2), ((py + sokobanGUI.DEMI_CELL_HEIGHT) - 2), 4, 4);
-                      } else {
-                        g2d.fillOval(((px + sokobanGUI.DEMI_CELL_WIDTH) - 3), ((py + sokobanGUI.DEMI_CELL_HEIGHT) - 3), 6, 6);
-                      }
-                    }
-                  }
+                  this.drawCrate(g2d, px, py, isEvenTime);
                 }
               }
             }
           }
         }
       }
+    }
+
+    public void drawFloor(final Graphics2D g2d, final int px, final int py) {
+      g2d.setColor(sokobanGUI.GridPanel.FLOOR_BASE);
+      g2d.fillRect(px, py, sokobanGUI.CELL_WIDTH, sokobanGUI.CELL_HEIGHT);
+      int pad = Math.max(1, (sokobanGUI.CELL_WIDTH / 12));
+      g2d.setColor(sokobanGUI.GridPanel.FLOOR_NOISE1);
+      g2d.fillRect((px + pad), (py + pad), Math.max(1, (sokobanGUI.CELL_WIDTH / 3)), Math.max(1, (sokobanGUI.CELL_HEIGHT / 6)));
+      g2d.setColor(sokobanGUI.GridPanel.FLOOR_NOISE2);
+      int _max = Math.max(2, (sokobanGUI.CELL_WIDTH / 4));
+      int _max_1 = Math.max(2, (sokobanGUI.CELL_HEIGHT / 7));
+      g2d.fillRect((((px + sokobanGUI.CELL_WIDTH) - pad) - _max), 
+        (((py + sokobanGUI.CELL_HEIGHT) - pad) - _max_1), 
+        Math.max(2, (sokobanGUI.CELL_WIDTH / 4)), Math.max(1, (sokobanGUI.CELL_HEIGHT / 7)));
+    }
+
+    public void drawWall(final Graphics2D g2d, final int px, final int py) {
+      g2d.setColor(sokobanGUI.GridPanel.WALL_BASE);
+      g2d.fillRect(px, py, sokobanGUI.CELL_WIDTH, sokobanGUI.CELL_HEIGHT);
+      g2d.setColor(sokobanGUI.GridPanel.WALL_LIGHT);
+      g2d.drawLine(px, py, ((px + sokobanGUI.CELL_WIDTH) - 1), py);
+      g2d.drawLine(px, py, px, ((py + sokobanGUI.CELL_HEIGHT) - 1));
+      g2d.setColor(sokobanGUI.GridPanel.WALL_EDGE);
+      g2d.drawLine(px, ((py + sokobanGUI.CELL_HEIGHT) - 1), ((px + sokobanGUI.CELL_WIDTH) - 1), ((py + sokobanGUI.CELL_HEIGHT) - 1));
+      g2d.drawLine(((px + sokobanGUI.CELL_WIDTH) - 1), py, ((px + sokobanGUI.CELL_WIDTH) - 1), ((py + sokobanGUI.CELL_HEIGHT) - 1));
+      Color _color = new Color(0, 0, 0, 35);
+      g2d.setColor(_color);
+      int half = (sokobanGUI.CELL_HEIGHT / 2);
+      int quarter = (sokobanGUI.CELL_WIDTH / 4);
+      g2d.drawLine(px, (py + half), ((px + sokobanGUI.CELL_WIDTH) - 1), (py + half));
+      g2d.drawLine((px + quarter), py, (px + quarter), (py + half));
+      g2d.drawLine((px + (2 * quarter)), (py + half), (px + (2 * quarter)), ((py + sokobanGUI.CELL_HEIGHT) - 1));
+      g2d.drawLine((px + (3 * quarter)), py, (px + (3 * quarter)), (py + half));
+    }
+
+    public void drawCrate(final Graphics2D g2d, final int px, final int py, final boolean glow) {
+      g2d.setColor(sokobanGUI.GridPanel.SHADOW);
+      g2d.fillRoundRect((px + (sokobanGUI.CELL_WIDTH / 10)), (py + (sokobanGUI.CELL_HEIGHT / 10)), 
+        (sokobanGUI.CELL_WIDTH - (sokobanGUI.CELL_WIDTH / 7)), (sokobanGUI.CELL_HEIGHT - (sokobanGUI.CELL_HEIGHT / 7)), 6, 6);
+      int pad = Math.max(2, (sokobanGUI.CELL_WIDTH / 8));
+      int w = (sokobanGUI.CELL_WIDTH - (2 * pad));
+      int h = (sokobanGUI.CELL_HEIGHT - (2 * pad));
+      g2d.setColor(sokobanGUI.GridPanel.CRATE_BASE);
+      g2d.fillRoundRect((px + pad), (py + pad), w, h, 8, 8);
+      g2d.setColor(sokobanGUI.GridPanel.CRATE_EDGE);
+      g2d.drawRoundRect((px + pad), (py + pad), w, h, 8, 8);
+      g2d.setColor(sokobanGUI.GridPanel.CRATE_STRAP);
+      int strap = Math.max(2, (sokobanGUI.CELL_WIDTH / 12));
+      g2d.fillRect((px + pad), ((py + pad) + (h / 3)), w, strap);
+      g2d.fillRect((px + pad), ((py + pad) + ((2 * h) / 3)), w, strap);
+      if (glow) {
+        Color _color = new Color(255, 255, 255, 35);
+        g2d.setColor(_color);
+        g2d.drawLine(((px + pad) + 3), ((py + pad) + 3), (((px + pad) + w) - 3), ((py + pad) + 3));
+      }
+    }
+
+    public void drawWorker(final Graphics2D g2d, final int px, final int py) {
+      int pad = Math.max(2, (sokobanGUI.CELL_WIDTH / 10));
+      g2d.setColor(sokobanGUI.GridPanel.SHADOW);
+      g2d.fillOval(((px + pad) + (sokobanGUI.CELL_WIDTH / 10)), (((py + sokobanGUI.CELL_HEIGHT) - pad) - (sokobanGUI.CELL_HEIGHT / 5)), 
+        ((sokobanGUI.CELL_WIDTH - (2 * pad)) - (sokobanGUI.CELL_WIDTH / 6)), (sokobanGUI.CELL_HEIGHT / 4));
+      int torsoW = (sokobanGUI.CELL_WIDTH - (2 * pad));
+      int torsoH = ((int) (sokobanGUI.CELL_HEIGHT * 0.55));
+      int torsoX = (px + pad);
+      int torsoY = (((py + sokobanGUI.CELL_HEIGHT) - torsoH) - pad);
+      g2d.setColor(sokobanGUI.GridPanel.WORKER_BODY);
+      g2d.fillRoundRect(torsoX, torsoY, torsoW, torsoH, (pad * 2), (pad * 2));
+      g2d.setColor(sokobanGUI.GridPanel.WORKER_OUTLINE);
+      g2d.drawRoundRect(torsoX, torsoY, torsoW, torsoH, (pad * 2), (pad * 2));
+      int armW = Math.max(3, (sokobanGUI.CELL_WIDTH / 6));
+      int armH = Math.max(4, (sokobanGUI.CELL_HEIGHT / 3));
+      g2d.setColor(sokobanGUI.GridPanel.WORKER_BODY);
+      g2d.fillRoundRect((px + (pad / 2)), (torsoY + pad), armW, armH, pad, pad);
+      g2d.fillRoundRect((((px + sokobanGUI.CELL_WIDTH) - (pad / 2)) - armW), (torsoY + pad), armW, armH, pad, pad);
+      g2d.setColor(sokobanGUI.GridPanel.WORKER_STRAP);
+      g2d.fillRect((torsoX + (torsoW / 3)), (torsoY + pad), Math.max(2, (torsoW / 6)), (torsoH - (2 * pad)));
+      int headD = ((int) (sokobanGUI.CELL_WIDTH * 0.45));
+      int headX = (px + ((sokobanGUI.CELL_WIDTH - headD) / 2));
+      int headY = (torsoY - (headD / 2));
+      g2d.setColor(sokobanGUI.GridPanel.WORKER_SKIN);
+      g2d.fillOval(headX, headY, headD, headD);
+      g2d.setColor(sokobanGUI.GridPanel.WORKER_OUTLINE);
+      g2d.drawOval(headX, headY, headD, headD);
+      int helmetH = Math.max(4, ((int) (headD * 0.55)));
+      int helmetY = (headY - (helmetH / 3));
+      g2d.setColor(sokobanGUI.GridPanel.WORKER_HELMET);
+      g2d.fillOval(headX, helmetY, headD, helmetH);
+      g2d.setColor(sokobanGUI.GridPanel.WORKER_OUTLINE);
+      g2d.drawOval(headX, helmetY, headD, helmetH);
+    }
+
+    public void drawGoal(final Graphics2D g2d, final int px, final int py, final boolean pulse) {
+      g2d.setColor(sokobanGUI.GridPanel.GOAL_BASE);
+      g2d.fillRect(px, py, sokobanGUI.CELL_WIDTH, sokobanGUI.CELL_HEIGHT);
+      int ringPad = Math.max(3, (sokobanGUI.CELL_WIDTH / 6));
+      g2d.setColor(sokobanGUI.GridPanel.GOAL_RING);
+      g2d.drawOval((px + ringPad), (py + ringPad), (sokobanGUI.CELL_WIDTH - (2 * ringPad)), (sokobanGUI.CELL_HEIGHT - (2 * ringPad)));
+      int dotD = Math.max(4, (sokobanGUI.CELL_WIDTH / 4));
+      if (pulse) {
+        dotD = (dotD + 2);
+      }
+      g2d.fillOval((px + ((sokobanGUI.CELL_WIDTH - dotD) / 2)), (py + ((sokobanGUI.CELL_HEIGHT - dotD) / 2)), dotD, dotD);
     }
 
     @Override
@@ -204,7 +271,7 @@ public class sokobanGUI extends JFrame implements KeyListener, EnvironmentListen
     }
 
     @SyntheticMember
-    private static final long serialVersionUID = -5504417407L;
+    private static final long serialVersionUID = -11716464286L;
   }
 
   /**
@@ -245,7 +312,7 @@ public class sokobanGUI extends JFrame implements KeyListener, EnvironmentListen
   public sokobanGUI(final long waitingDuration) {
     try {
       this.waitingDuration = waitingDuration;
-      this.setTitle("sokoban Simulator");
+      this.setTitle("Sokoban Simulator");
       URL sokobanIcon = Resources.getResource(sokobanGUI.class, "sokoban.png");
       this.setIconImage(ImageIO.read(sokobanIcon));
       URL iconURL = Resources.getResource(this.getClass(), "play.png");
@@ -315,8 +382,7 @@ public class sokobanGUI extends JFrame implements KeyListener, EnvironmentListen
 
   public void gameOver() {
     this.setVisible(false);
-    JOptionPane.showMessageDialog(this, "The sokoban is dead!", 
-      this.getTitle(), JOptionPane.INFORMATION_MESSAGE);
+    JOptionPane.showMessageDialog(this, "The sokoban is dead!", this.getTitle(), JOptionPane.INFORMATION_MESSAGE);
     this.dispose();
   }
 

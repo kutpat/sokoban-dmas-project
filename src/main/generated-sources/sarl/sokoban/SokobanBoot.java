@@ -37,17 +37,17 @@ public class SokobanBoot extends Agent {
   /**
    * Width of the world (in number of cells).
    */
-  private final int WIDTH = 5;
+  private final int WIDTH = 20;
 
   /**
    * Height of the world (in number of cells).
    */
-  private final int HEIGHT = 5;
+  private final int HEIGHT = 20;
 
   /**
    * Number of ghosts at the start-up.
    */
-  private final int NB_GHOSTS = 1;
+  private final int NB_GHOSTS = 3;
 
   /**
    * Percpetion distance for the agents (usually the ghosts).

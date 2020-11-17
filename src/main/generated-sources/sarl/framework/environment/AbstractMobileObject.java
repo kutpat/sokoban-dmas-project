@@ -262,6 +262,7 @@ public abstract class AbstractMobileObject extends AbstractSituatedObject implem
    * @param clock is the simulation time manager
    * @return the linear instant motion.
    */
+  @Pure
   protected Vector2f computeSteeringTranslation(final Vector2f move, final TimeManager clock) {
     float length = move.length();
     Vector2f v = null;
@@ -320,6 +321,7 @@ public abstract class AbstractMobileObject extends AbstractSituatedObject implem
    * @param clock is the simulation time manager
    * @return the linear instant motion.
    */
+  @Pure
   protected Vector2f computeKinematicTranslation(final Vector2f move, final TimeManager clock) {
     float speed = move.length();
     if ((speed != 0f)) {
@@ -339,6 +341,7 @@ public abstract class AbstractMobileObject extends AbstractSituatedObject implem
    * @param clock is the simulation time manager
    * @return the angular instant motion.
    */
+  @Pure
   protected float computeKinematicRotation(final float move, final TimeManager clock) {
     float speed = Math.abs(move);
     if ((speed != 0f)) {
@@ -358,6 +361,7 @@ public abstract class AbstractMobileObject extends AbstractSituatedObject implem
    * @param clock is the simulation time manager
    * @return the angular instant motion.
    */
+  @Pure
   protected float computeSteeringRotation(final float move, final TimeManager clock) {
     float v = 0;
     if ((move != 0f)) {

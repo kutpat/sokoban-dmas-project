@@ -30,6 +30,7 @@ import java.lang.ref.WeakReference
  * @author St&eacute;phane GALLAND &lt;stephane.galland@utbm.fr&gt;
  * @version $Name$ $Revision$ $Date$
  */
+ 
 class FrameworkMouseAdapter extends MouseAdapter {
 
 	val parent : WeakReference<FrameworkGUI>
