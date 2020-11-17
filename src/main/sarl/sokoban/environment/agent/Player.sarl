@@ -24,6 +24,8 @@ import sokoban.environment.maze.Direction
 import java.text.MessageFormat
 import java.util.UUID
 import java.util.logging.Logger
+import java.util.LinkedList
+import java.util.Queue
 
 /** Interface that must be used by the player for moving his/her avatar.
  *
@@ -34,35 +36,41 @@ import java.util.logging.Logger
  */
 class Player {
 
-	var lastInputDirection : Direction 
-	
-	val bodyId : UUID 
-	val logger : Logger 
-	
+	val pendingDirections : Queue<Direction> = new LinkedList
+
+	val bodyId : UUID
+	val logger : Logger
+
 	package new (bodyId : UUID, logger : Logger) {
 		this.bodyId = bodyId
 		this.logger = logger
 	}
-	
+
 	/** Move the player avatar.
-	 */
-	synchronized def move(direction : Direction) : void {
-		if (this.logger !== null) {
+         */
+        synchronized def move(direction : Direction) : void {
+                if (this.logger !== null) {
 			if (direction === null) {
 				this.logger.info("Player wants to stay static.")
 			} else {
-				this.logger.info(MessageFormat.format("Player wants to move to {0}.", direction.name))
+                                this.logger.info(MessageFormat.format("Player wants to move to {0}.", direction.name))
 			}
 		}
-		this.lastInputDirection = direction
-	}
-	
-	/** Replies the last input direction.
+		this.pendingDirections.offer(direction)
+        }
+
+        /** Replies the last input direction.
 	 */
-	package synchronized def getDirection : Direction {
-		this.lastInputDirection
+        package synchronized def getDirection : Direction {
+		this.pendingDirections.peek
 	}
-	
+
+	/** Replies and removes the next requested direction.
+	 */
+	package synchronized def consumeDirection : Direction {
+		this.pendingDirections.poll
+	}
+
 	/** Replies the identifier of the body.
 	 */
 	def getBodyId : UUID {

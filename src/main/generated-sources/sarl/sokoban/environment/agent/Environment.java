@@ -237,12 +237,13 @@ public class Environment extends Agent {
 
   @Pure
   private boolean $behaviorUnitGuard$Action$2(final Action it, final Action occurrence) {
-    return (occurrence.time >= it.time);
+    throw new Error("Unresolved compilation problems:"
+      + "\nType mismatch: cannot convert from boolean to boolean");
   }
 
   private void $behaviorUnit$RunEndOfStep$3(final RunEndOfStep occurrence) {
     synchronized (this) {
-      Direction avatarDirection = this.player.getDirection();
+      Direction avatarDirection = this.player.consumeDirection();
       UUID _bodyId = this.player.getBodyId();
       MazeChangeQuery avatarAction = new MazeChangeQuery(_bodyId, avatarDirection);
       this.actions.add(avatarAction);
@@ -440,26 +441,17 @@ public class Environment extends Agent {
   @Pure
   @SyntheticMember
   public boolean equals(final Object obj) {
-    if (this == obj)
-      return true;
-    if (obj == null)
-      return false;
-    if (getClass() != obj.getClass())
-      return false;
-    Environment other = (Environment) obj;
-    if (other.time != this.time)
-      return false;
-    return super.equals(obj);
+    throw new Error("Unresolved compilation problems:"
+      + "\nThe return type is incompatible with equals(Object)"
+      + "\nThe return type is incompatible with equals(Object)");
   }
 
   @Override
   @Pure
   @SyntheticMember
   public int hashCode() {
-    int result = super.hashCode();
-    final int prime = 31;
-    result = prime * result + Integer.hashCode(this.time);
-    return result;
+    throw new Error("Unresolved compilation problems:"
+      + "\nThe return type is incompatible with equals(Object)");
   }
 
   @SyntheticMember

@@ -131,44 +131,44 @@ agent Environment {
 			}
 		}
 	}
-	
+
 	on RunEndOfStep {
-		synchronized(this) {
+		synchronized (this) {
 			// Endogenous behavior: move the sokoban from the player's action
-			var avatarDirection = this.player.direction
+			var avatarDirection = this.player.consumeDirection
 			var avatarAction = new MazeChangeQuery(this.player.bodyId, avatarDirection)
 			this.actions += avatarAction
 
 			// Endogenous behavior: decrease the super power of sokoban
-			getSuperPowerAccessor(this.player.bodyId).decreaseSuperPower
+                        getSuperPowerAccessor(this.player.bodyId).decreaseSuperPower
 
 			// Change the state of the universe
 			if (applyActions(this.actions)) {
 				// sokoban is dead.
-				emit(new sokobanIsDead)
-				fireGameOver
+                                emit(new sokobanIsDead)
+                                fireGameOver
 				killMe
 			}
-			
-			// Increase time
-			this.time++
-			
+
+                        // Increase time
+                        this.time++
+
 			// Notify about environment's changes
 			fireEnvironmentChange
-			
+
 			// Move to next step
 			emit(new RunBeginingOfStep)
-		}
-	}
+                }
+        }
 	
 	on RunBeginingOfStep {
-		synchronized(this) {
+		synchronized (this) {
 			this.actions.clear
-			
+
 			for (e : getPerceptions().entrySet) {
 				sendPerception(this.time, e.key.agentId, e.value, e.key.position)
 			}
 		}
 	}
-	
+
 }

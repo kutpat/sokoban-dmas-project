@@ -24,7 +24,9 @@ import io.sarl.lang.core.annotation.SarlElementType;
 import io.sarl.lang.core.annotation.SarlSpecification;
 import io.sarl.lang.core.annotation.SyntheticMember;
 import java.text.MessageFormat;
+import java.util.LinkedList;
 import java.util.Objects;
+import java.util.Queue;
 import java.util.UUID;
 import java.util.logging.Logger;
 import org.eclipse.xtext.xbase.lib.Pure;
@@ -44,7 +46,7 @@ import sokoban.environment.maze.Direction;
 @XbaseGenerated
 @SuppressWarnings("all")
 public class Player {
-  private Direction lastInputDirection;
+  private final Queue<Direction> pendingDirections = new LinkedList<Direction>();
 
   private final UUID bodyId;
 
@@ -66,7 +68,7 @@ public class Player {
         this.logger.info(MessageFormat.format("Player wants to move to {0}.", direction.name()));
       }
     }
-    this.lastInputDirection = direction;
+    this.pendingDirections.offer(direction);
   }
 
   /**
@@ -74,7 +76,14 @@ public class Player {
    */
   @Pure
   synchronized Direction getDirection() {
-    return this.lastInputDirection;
+    return this.pendingDirections.peek();
+  }
+
+  /**
+   * Replies and removes the next requested direction.
+   */
+  synchronized Direction consumeDirection() {
+    return this.pendingDirections.poll();
   }
 
   /**
