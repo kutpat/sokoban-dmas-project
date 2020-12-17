@@ -30,7 +30,7 @@ import java.util.Random
 import java.util.TreeMap
 import java.util.UUID
 
-/**
+/** 
  * Define the maze.
  * 
  * @author $Author: sgalland$
@@ -40,13 +40,13 @@ import java.util.UUID
  */
 class Maze {
 
-	/** Max number of super pills in the world.
-	 */
+		/** Max number of super pills in the world.
+		 */
 	static val MAX_SUPER_PILLS = 5
 
 	/** Matrix of the objects.
 	 */
-	val grid : sokobanObject[][] 
+	val grid : sokobanObject[][]
 
 	val bodies = new TreeMap<UUID, AgentBody>
 
@@ -62,7 +62,7 @@ class Maze {
 	 */
 	val random = new Random
 
-	/**
+	/** 
 	 * @param width is the width of the world.
 	 * @param height is the height of the world.
 	 */
@@ -80,7 +80,7 @@ class Maze {
 	 * @param height height of the maze.
 	 */
 	private def buildWorld(width : int, height : int) : void {
-		//buildMaze_recursiveAlgorithm(0, width, 0, height);
+		// buildMaze_recursiveAlgorithm(0, width, 0, height);
 		buildMaze
 
 		for (var i = 0; i < width; i++) {
@@ -121,7 +121,7 @@ class Maze {
 		this.grid.get(x).set(y, null)
 		walls.add(new PrimWall(x, y - 1, x, y - 2, x - 1, y - 2, x, y - 3, x + 1, y - 2))
 		walls.add(new PrimWall(x, y + 1, x, y + 2, x - 1, y + 2, x, y + 3, x + 1, y + 2))
-		walls.add(new PrimWall(x - 1, y, x - 2,  y, x - 2, y + 1, x - 3, y, x - 2, y - 1))
+		walls.add(new PrimWall(x - 1, y, x - 2, y, x - 2, y + 1, x - 3, y, x - 2, y - 1))
 		walls.add(new PrimWall(x + 1, y, x + 2, y, x + 2, y - 1, x + 3, y, x + 2, y + 1))
 		
 		// Loop 'til no more place for digging
@@ -129,10 +129,10 @@ class Maze {
 			// Select a wall to dig inside
 			var diggeableWall = walls.remove(this.random.nextInt(walls.size))
 			// Check if the wall could be digged
-			if (diggeableWall.corridor.x >= 0 && diggeableWall.corridor.x < this.width
-				&& diggeableWall.corridor.y >= 0 && diggeableWall.corridor.y < this.height
-				&& this.grid.get(diggeableWall.corridor.x).get(diggeableWall.corridor.y) instanceof WallObject
-				&& this.grid.get(diggeableWall.passage.x).get(diggeableWall.passage.y) instanceof WallObject) {
+			if (diggeableWall.corridor.x >= 0 && diggeableWall.corridor.x < this.width &&
+				diggeableWall.corridor.y >= 0 && diggeableWall.corridor.y < this.height &&
+				this.grid.get(diggeableWall.corridor.x).get(diggeableWall.corridor.y) instanceof WallObject &&
+				this.grid.get(diggeableWall.passage.x).get(diggeableWall.passage.y) instanceof WallObject) {
 				// Dig the walls
 				this.grid.get(diggeableWall.passage.x).set(diggeableWall.passage.y, null)
 				this.grid.get(diggeableWall.corridor.x).set(diggeableWall.corridor.y, null)
@@ -143,30 +143,21 @@ class Maze {
 			}
 		}
 	}
-	
+
 	private def addWallCandidate(walls : List<PrimWall>, corridor : Point2i, candidate : Point2i) : void {
 		val v = candidate - corridor
 
 		val r = v.clone
 		r.perpendicularize
-		
+
 		var pw = new PrimWall(
 				// new passage
-				corridor.x + v.x,
-				corridor.y + v.y,
-				// new corridor
-				corridor.x + 2 * v.x,
-				corridor.y + 2 * v.y,
-				// new candidate 1
-				corridor.x + 3 * v.x,
-				corridor.y + 3 * v.y,
-				// new candidate 2
-				corridor.x + 2 * v.x + r.x,
-				corridor.y + 2 * v.y + r.y,
-				// new candidate 3
-				corridor.x + 2 * v.x - r.x,
-				corridor.y + 2 * v.y - r.y)
-		
+		corridor.x + v.x, corridor.y + v.y, // new corridor
+		corridor.x + 2 * v.x, corridor.y + 2 * v.y, // new candidate 1
+				corridor.x + 3 * v.x, corridor.y + 3 * v.y, // new candidate 2
+				corridor.x + 2 * v.x + r.x, corridor.y + 2 * v.y + r.y, // new candidate 3
+		corridor.x + 2 * v.x - r.x, corridor.y + 2 * v.y - r.y)
+
 		walls += pw
 	}
 
@@ -179,12 +170,12 @@ class Maze {
 	 */
 	@Pure
 	synchronized def canMoveInside(x : int, y : int) : boolean {
-		x >= 0 && y >= 0 && x < this.width && y < this.height
-		&& (this.grid.get(x).get(y) === null || this.grid.get(x).get(y).pickable)
+		x >= 0 && y >= 0 && x < this.width && y < this.height &&
+			(this.grid.get(x).get(y) === null || this.grid.get(x).get(y).pickable)
 	}
 
 	/** Create a body of the given type.
-	 *
+	 * 
 	 * @param bodyType the type of the body.
 	 * @param agentId the identifier of the agent that will be linked to the body.
 	 * @param perceptionDistance the distance of perception.
@@ -266,7 +257,7 @@ class Maze {
 	}
 
 	/** Replies the agent bodies.
-	 *
+	 * 
 	 * @return the agent bodies.
 	 */
 	def getAgentBodies : Collection<AgentBody> {
@@ -274,7 +265,7 @@ class Maze {
 	}
 
 	/** Replies the agent body.
-	 *
+	 * 
 	 * @param id
 	 * @return the body.
 	 */
@@ -282,7 +273,7 @@ class Maze {
 	def getAgentBody(id : UUID) : AgentBody {
 		this.bodies.get(id)
 	}
-	
+
 	/** Replies the accessors for managing the super power of sokoban.
 	 * 
 	 * @param id the id of sokoban.
@@ -296,6 +287,7 @@ class Maze {
 				def resetSuperPower {
 					sokoban.resetSuperPower
 				}
+
 				def decreaseSuperPower {
 					sokoban.decreaseSuperPower
 				}
@@ -304,7 +296,163 @@ class Maze {
 		return new SuperPowerAccessor
 	}
 
-	/**
+	/** Check if coordinates are within maze bounds.
+	 * 
+	 * @param x the x coordinate
+	 * @param y the y coordinate
+	 * @return true if coordinates are within bounds
+	 */
+	@Pure
+	synchronized def inBounds(x : int, y : int) : boolean {
+		x >= 0 && y >= 0 && x < this.width && y < this.height
+	}
+
+	/** Check if a tile is walkable (no wall, no box, no blocking object).
+	 * 
+	 * @param x the x coordinate
+	 * @param y the y coordinate
+	 * @return true if the tile is walkable
+	 */
+	@Pure
+	synchronized def isWalkable(x : int, y : int) : boolean {
+		if (!inBounds(x, y)) {
+			return false
+		}
+		var obj = this.grid.get(x).get(y)
+		if (obj === null) {
+			return true
+		}
+		// Walls and boxes are not walkable
+		if (obj instanceof WallObject || obj instanceof BoxObject) {
+			return false
+		}
+		// Agent bodies are not walkable
+		if (obj instanceof AgentBody) {
+			return false
+		}
+		// Other objects (like pills) are walkable
+		return true
+	}
+
+	/** Check if a tile contains a box.
+	 * 
+	 * @param x the x coordinate
+	 * @param y the y coordinate
+	 * @return true if the tile contains a box
+	 */
+	@Pure
+	synchronized def isBox(x : int, y : int) : boolean {
+		if (!inBounds(x, y)) {
+			return false
+		}
+		var obj = this.grid.get(x).get(y)
+		return obj instanceof BoxObject
+	}
+
+	/** Move a box from one position to another.
+	 * 
+	 * @param fromX source x coordinate
+	 * @param fromY source y coordinate
+	 * @param toX destination x coordinate
+	 * @param toY destination y coordinate
+	 * @return true if the box was successfully moved
+	 */
+	synchronized def moveBox(fromX : int, fromY : int, toX : int, toY : int) : boolean {
+		if (!inBounds(fromX, fromY) || !inBounds(toX, toY)) {
+			return false
+		}
+		var box = this.grid.get(fromX).get(fromY)
+		if (!(box instanceof BoxObject)) {
+			return false
+		}
+		// Check if destination is walkable (empty or has a pickable object)
+		var destObj = this.grid.get(toX).get(toY)
+		if (destObj !== null && !destObj.pickable) {
+			return false
+		}
+		// Move the box
+		this.grid.get(fromX).set(fromY, destObj)
+		this.grid.get(toX).set(toY, box)
+		box.setPosition(toX, toY)
+		if (destObj !== null) {
+			destObj.setPosition(fromX, fromY)
+		}
+		return true
+	}
+
+	/** Move the player by the given delta.
+	 * 
+	 * @param playerBody the player body to move
+	 * @param dx delta x
+	 * @param dy delta y
+	 * @return true if the player was successfully moved
+	 */
+	synchronized def movePlayer(playerBody : AgentBody, dx : int, dy : int) : boolean {
+		if (playerBody === null) {
+			return false
+		}
+		var pos = playerBody.position
+		var oldX = pos.x
+		var oldY = pos.y
+		var newX = oldX + dx
+		var newY = oldY + dy
+
+		if (!inBounds(newX, newY)) {
+			return false
+		}
+
+		// Check if the destination is walkable
+		if (!isWalkable(newX, newY)) {
+			// If there's a box, try to push it
+			if (isBox(newX, newY)) {
+				var boxNewX = newX + dx
+				var boxNewY = newY + dy
+				// Check if the space behind the box is walkable
+				if (isWalkable(boxNewX, boxNewY)) {
+					// Move the box first
+					if (moveBox(newX, newY, boxNewX, boxNewY)) {
+						// Then move the player - get what's at new position (should be empty or pickable now)
+						var destObj = this.grid.get(newX).get(newY)
+						// Clear old position (set to what was there before player, or null)
+						var oldPosObj = this.grid.get(oldX).get(oldY)
+						// If old position had the player, clear it
+						if (oldPosObj === playerBody) {
+							this.grid.get(oldX).set(oldY, null)
+						}
+						// Set new position to player
+						this.grid.get(newX).set(newY, playerBody)
+						playerBody.setPosition(newX, newY)
+						// If there was something at destination (like a pill), put it at old position
+						if (destObj !== null && destObj !== playerBody) {
+							this.grid.get(oldX).set(oldY, destObj)
+							destObj.setPosition(oldX, oldY)
+						}
+						return true
+					}
+				}
+			}
+			return false
+		}
+
+		// Destination is walkable, move the player
+		var destObj = this.grid.get(newX).get(newY)
+		// Clear old position
+		var oldPosObj = this.grid.get(oldX).get(oldY)
+		if (oldPosObj === playerBody) {
+			this.grid.get(oldX).set(oldY, null)
+		}
+		// Set new position to player
+		this.grid.get(newX).set(newY, playerBody)
+		playerBody.setPosition(newX, newY)
+		// If there was something at destination (like a pill), put it at old position
+		if (destObj !== null && destObj !== playerBody) {
+			this.grid.get(oldX).set(oldY, destObj)
+			destObj.setPosition(oldX, oldY)
+		}
+		return true
+	}
+
+	/** 
 	 * @author $Author: sgalland$
 	 * @version $FullVersion$
 	 * @mavengroupid $GroupId$
@@ -317,22 +465,21 @@ class Maze {
 		public val passageCandidate1 : Point2i
 		public val passageCandidate2 : Point2i
 		public val passageCandidate3 : Point2i
-		
-		new (passageX : int, passageY : int, corridorX : int, corridorY : int,
-				passageCandidateX1 : int, passageCandidateY1 : int,
-				passageCandidateX2 : int, passageCandidateY2 : int,
-				passageCandidateX3 : int, passageCandidateY3 : int) {
+
+		new (passageX : int, passageY : int, corridorX : int, corridorY : int, passageCandidateX1 : int,
+			passageCandidateY1 : int, passageCandidateX2 : int, passageCandidateY2 : int, passageCandidateX3 : int,
+			passageCandidateY3 : int) {
 			this.passage = new Point2i(passageX, passageY)
 			this.corridor = new Point2i(corridorX, corridorY)
 			this.passageCandidate1 = new Point2i(passageCandidateX1, passageCandidateY1)
 			this.passageCandidate2 = new Point2i(passageCandidateX2, passageCandidateY2)
 			this.passageCandidate3 = new Point2i(passageCandidateX3, passageCandidateY3)
 		}
-		
+
 		def toString : String {
 			"passage=" + this.passage + "|corridor=" + this.corridor
 		}
-		
+
 	}
 
 }

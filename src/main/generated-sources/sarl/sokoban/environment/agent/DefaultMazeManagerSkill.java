@@ -38,6 +38,7 @@ import org.eclipse.xtext.xbase.lib.IntegerRange;
 import org.eclipse.xtext.xbase.lib.Pure;
 import org.eclipse.xtext.xbase.lib.XbaseGenerated;
 import sokoban.environment.maze.AgentBody;
+import sokoban.environment.maze.BoxObject;
 import sokoban.environment.maze.Direction;
 import sokoban.environment.maze.GhostBody;
 import sokoban.environment.maze.Maze;
@@ -108,42 +109,61 @@ public class DefaultMazeManagerSkill extends Skill implements MazeManager {
       {
         final AgentBody body = this.getAgentBody(entry.getKey());
         if ((body != null)) {
-          final Point2i pos = body.getPosition();
-          int nx = pos.getX();
-          int ny = pos.getY();
-          Direction _value = entry.getValue();
-          if (_value != null) {
-            switch (_value) {
-              case NORTH:
-                ny--;
-                break;
-              case SOUTH:
-                ny++;
-                break;
-              case WEST:
-                nx--;
-                break;
-              case EAST:
-                nx++;
-                break;
-              default:
-                break;
+          if ((body instanceof sokobanBody)) {
+            int dx = 0;
+            int dy = 0;
+            Direction _value = entry.getValue();
+            if (_value != null) {
+              switch (_value) {
+                case NORTH:
+                  dy = (-1);
+                  break;
+                case SOUTH:
+                  dy = 1;
+                  break;
+                case WEST:
+                  dx = (-1);
+                  break;
+                case EAST:
+                  dx = 1;
+                  break;
+                default:
+                  break;
+              }
+            } else {
             }
+            this.maze.movePlayer(body, dx, dy);
           } else {
+            final Point2i pos = body.getPosition();
+            int nx = pos.getX();
+            int ny = pos.getY();
+            Direction _value_1 = entry.getValue();
+            if (_value_1 != null) {
+              switch (_value_1) {
+                case NORTH:
+                  ny--;
+                  break;
+                case SOUTH:
+                  ny++;
+                  break;
+                case WEST:
+                  nx--;
+                  break;
+                case EAST:
+                  nx++;
+                  break;
+                default:
+                  break;
+              }
+            } else {
+            }
+            if (((((nx >= 0) && (ny >= 0)) && (nx < this.width)) && (ny < this.height))) {
+              boolean _isWalkable = this.maze.isWalkable(nx, ny);
+              if (_isWalkable) {
+                this.maze.setObjectAt(nx, ny, body);
+              }
+            }
           }
-          if ((nx < 0)) {
-            nx = 0;
-          }
-          if ((ny < 0)) {
-            ny = 0;
-          }
-          if ((nx >= this.width)) {
-            nx = (this.width - 1);
-          }
-          if ((ny >= this.height)) {
-            ny = (this.height - 1);
-          }
-          this.maze.setObjectAt(nx, ny, body);
         }
       }
     }
@@ -297,6 +317,35 @@ public class DefaultMazeManagerSkill extends Skill implements MazeManager {
 
   public sokobanBody createsokoban() {
     return this.maze.<sokobanBody>createBody(sokobanBody.class, null, 0);
+  }
+
+  public boolean createBox(final int x, final int y) {
+    if ((this.maze.inBounds(x, y) && this.maze.isWalkable(x, y))) {
+      sokobanObject obj = this.maze.getObjectAt(x, y);
+      if (((obj == null) || obj.isPickable())) {
+        BoxObject box = new BoxObject(x, y, this.maze);
+        this.maze.setObjectAt(x, y, box);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public void createBoxes(final int numberOfBoxes) {
+    int boxesCreated = 0;
+    int attempts = 0;
+    final int maxAttempts = 1000;
+    while (((boxesCreated < numberOfBoxes) && (attempts < maxAttempts))) {
+      {
+        attempts++;
+        int x = this.random.nextInt(this.width);
+        int y = this.random.nextInt(this.height);
+        boolean _createBox = this.createBox(x, y);
+        if (_createBox) {
+          boxesCreated++;
+        }
+      }
+    }
   }
 
   @Override

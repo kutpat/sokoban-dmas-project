@@ -106,6 +106,16 @@ public interface MazeManager extends Capacity {
   sokobanBody createsokoban();
 
   /**
+   * Create a box at the given position.
+   */
+  boolean createBox(final int x, final int y);
+
+  /**
+   * Create boxes randomly in the maze.
+   */
+  void createBoxes(final int numberOfBoxes);
+
+  /**
    * @ExcludeFromApidoc
    */
   class ContextAwareCapacityWrapper<C extends MazeManager> extends Capacity.ContextAwareCapacityWrapper<C> implements MazeManager {
@@ -198,6 +208,24 @@ public interface MazeManager extends Capacity {
       try {
         ensureCallerInLocalThread();
         return this.capacity.createsokoban();
+      } finally {
+        resetCallerInLocalThread();
+      }
+    }
+
+    public boolean createBox(final int x, final int y) {
+      try {
+        ensureCallerInLocalThread();
+        return this.capacity.createBox(x, y);
+      } finally {
+        resetCallerInLocalThread();
+      }
+    }
+
+    public void createBoxes(final int numberOfBoxes) {
+      try {
+        ensureCallerInLocalThread();
+        this.capacity.createBoxes(numberOfBoxes);
       } finally {
         resetCallerInLocalThread();
       }

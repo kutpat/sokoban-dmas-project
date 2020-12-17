@@ -1,0 +1,38 @@
+/* 
+ * Box object in the Sokoban environment.
+ * 
+ * Boxes can be pushed by the player but block movement.
+ */
+package sokoban.environment.maze
+
+import org.eclipse.xtext.xbase.lib.Pure
+import framework.math.Point2i
+
+/**
+ * Box in the sokoban environment.
+ * Boxes can be pushed by the player.
+ * 
+ * @author Generated
+ */
+class BoxObject extends sokobanObject {
+
+	new (x : int, y : int, maze : Maze) {
+		super(x, y, maze)
+	}
+
+	new (position : Point2i, maze : Maze) {
+		super(position, maze)
+	}
+
+	@Pure
+	final def isOccluder : boolean {
+		true
+	}
+
+	@Pure
+	final def isPickable : boolean {
+		false
+	}
+
+}
+

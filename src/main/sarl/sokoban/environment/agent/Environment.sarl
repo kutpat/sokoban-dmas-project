@@ -22,14 +22,21 @@ package sokoban.environment.^agent
 
 import framework.math.Point2i
 import sokoban.environment.maze.sokobanObject
+import sokoban.environment.maze.Direction
+import sokoban.environment.^agent.MoveUp
+import sokoban.environment.^agent.MoveDown
+import sokoban.environment.^agent.MoveLeft
+import sokoban.environment.^agent.MoveRight
 import sokoban.players.Ghost
 import io.sarl.api.core.DefaultContextInteractions
 import io.sarl.api.core.Destroy
 import io.sarl.api.core.Initialize
 import io.sarl.api.core.Lifecycle
+import io.sarl.api.core.Behaviors
 import java.util.Collections
 import java.util.TreeMap
 import java.util.logging.Logger
+import io.sarl.api.core.Schedules
 
 /** Definition of the agent that is managing the environment.
  * 
@@ -40,8 +47,8 @@ import java.util.logging.Logger
  */
 agent Environment {
 
-	uses MazeManager, MazeFrontEnd, DefaultContextInteractions, Lifecycle
-	
+	uses MazeManager, MazeFrontEnd, DefaultContextInteractions, Lifecycle, Behaviors
+
 	var listeners = <EnvironmentListener>newArrayList
 	var player : Player
 	var controller : Controller
@@ -54,7 +61,7 @@ agent Environment {
 		var height = occurrence.parameters.get(1) as Integer
 		var nbGhosts = occurrence.parameters.get(2) as Integer
 		var perceptionDistance = occurrence.parameters.get(3) as Integer
-		for (i : 4..<occurrence.parameters.size) {
+		for (i : 4 ..< occurrence.parameters.size) {
 			var o = occurrence.parameters.get(i)
 			if (o instanceof EnvironmentListener) {
 				this.listeners += o
@@ -65,15 +72,24 @@ agent Environment {
 		this.controller = new Controller(defaultSpace, defaultAddress)
 		var sokobanBody = createsokoban
 		this.player = new Player(sokobanBody.agentId, Logger::getLogger(ID.toString))
-		for (i : 0..<nbGhosts) {
+
+		// Initialize 2 boxes in the maze
+		createBoxes(2)
+
+		for (i : 0 ..< nbGhosts) {
 			var ghostBody = createGhost(perceptionDistance)
 			spawnInContextWithID(typeof(Ghost), ghostBody.agentId, defaultContext)
 		}
 		firePlayerBinding
 		fireControllerBinding
 		fireEnvironmentChange
+
+		// Start periodic check for player movement (every 50ms)
+		every(50) [
+			checkAndProcessPlayerMovement
+		]
 	}
-	
+
 	def fireEnvironmentChange {
 		var objects = new TreeMap<Point2i, sokobanObject>
 		for (obj : getsokobanObjects) {
@@ -84,7 +100,7 @@ agent Environment {
 			listener.environmentChanged(^event)
 		}
 	}
-	
+
 	def firePlayerBinding {
 		for (listener : this.listeners) {
 			listener.bindPlayer(this.player)
@@ -121,13 +137,82 @@ agent Environment {
 		clearSkill(typeof(MazeManager));
 		clearSkill(typeof(MazeFrontEnd))
 	}
-	
+
 	on Action [occurrence.time >= time] {
-		synchronized(this) {
+		synchronized (this) {
 			this.actions += new MazeChangeQuery(occurrence.source.ID, occurrence.direction)
-			
+
 			if (this.actions.size >= bodyCount - 1) {
-				emit(new RunEndOfStep) [it == defaultAddress]
+				emit(new RunEndOfStep)[it == defaultAddress]
+			}
+		}
+	}
+
+	// Handle movement events from PlayerAgent
+	on MoveUp {
+		synchronized (this) {
+			// Convert MoveUp event to Direction and add to player's action queue
+			var avatarDirection = Direction::NORTH
+			this.player.move(avatarDirection)
+			// Trigger step processing immediately for player movement
+			processPlayerMovement
+		}
+	}
+
+	on MoveDown {
+		synchronized (this) {
+			var avatarDirection = Direction::SOUTH
+			this.player.move(avatarDirection)
+			processPlayerMovement
+		}
+	}
+
+	on MoveLeft {
+		synchronized (this) {
+			var avatarDirection = Direction::WEST
+			this.player.move(avatarDirection)
+			processPlayerMovement
+		}
+	}
+
+	on MoveRight {
+		synchronized (this) {
+			var avatarDirection = Direction::EAST
+			this.player.move(avatarDirection)
+			processPlayerMovement
+		}
+	}
+
+	// Process player movement immediately
+	def processPlayerMovement {
+		var avatarDirection = this.player.consumeDirection
+		if (avatarDirection !== null) {
+			var avatarAction = new MazeChangeQuery(this.player.bodyId, avatarDirection)
+			this.actions += avatarAction
+
+			// Endogenous behavior: decrease the super power of sokoban
+			getSuperPowerAccessor(this.player.bodyId).decreaseSuperPower
+
+			// Change the state of the universe
+			if (applyActions(this.actions)) {
+				// sokoban is dead.
+				emit(new sokobanIsDead)
+				fireGameOver
+				killMe
+			} else {
+				// Increase time
+				this.time++
+
+				// Notify about environment's changes
+				fireEnvironmentChange
+
+				// Clear actions for next step
+				this.actions.clear
+
+				// Send perceptions
+				for (e : getPerceptions().entrySet) {
+					sendPerception(this.time, e.key.agentId, e.value, e.key.position)
+				}
 			}
 		}
 	}
@@ -146,11 +231,11 @@ agent Environment {
 			if (applyActions(this.actions)) {
 				// sokoban is dead.
                                 emit(new sokobanIsDead)
-                                fireGameOver
+				fireGameOver
 				killMe
 			}
 
-                        // Increase time
+			// Increase time
                         this.time++
 
 			// Notify about environment's changes
@@ -159,11 +244,17 @@ agent Environment {
 			// Move to next step
 			emit(new RunBeginingOfStep)
                 }
-        }
+	}
 	
 	on RunBeginingOfStep {
 		synchronized (this) {
 			this.actions.clear
+
+			// Check if player has pending movement and process it immediately
+			var pendingDir = this.player.getDirection
+			if (pendingDir !== null) {
+				processPlayerMovement
+			}
 
 			for (e : getPerceptions().entrySet) {
 				sendPerception(this.time, e.key.agentId, e.value, e.key.position)
@@ -171,4 +262,15 @@ agent Environment {
 		}
 	}
 
-}
+	// Also process movement when player.move() is called via a periodic check
+	// This ensures movement happens even if RunBeginingOfStep isn't firing
+	def checkAndProcessPlayerMovement {
+		synchronized (this) {
+			var pendingDir = this.player.getDirection
+			if (pendingDir !== null) {
+				processPlayerMovement
+			}
+		}
+	}
+	uses Schedules
+	}

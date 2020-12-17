@@ -1,0 +1,31 @@
+/* 
+ * Movement events for Sokoban player.
+ */
+package sokoban.environment.^agent
+
+import io.sarl.lang.core.Event
+
+/**
+ * Event to move the player up.
+ */
+event MoveUp extends Event {
+}
+
+/**
+ * Event to move the player down.
+ */
+event MoveDown extends Event {
+}
+
+/**
+ * Event to move the player left.
+ */
+event MoveLeft extends Event {
+}
+
+/**
+ * Event to move the player right.
+ */
+event MoveRight extends Event {
+}
+

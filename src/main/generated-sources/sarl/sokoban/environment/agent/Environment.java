@@ -21,10 +21,12 @@
 package sokoban.environment.agent;
 
 import framework.math.Point2i;
+import io.sarl.api.core.Behaviors;
 import io.sarl.api.core.DefaultContextInteractions;
 import io.sarl.api.core.Destroy;
 import io.sarl.api.core.Initialize;
 import io.sarl.api.core.Lifecycle;
+import io.sarl.api.core.Schedules;
 import io.sarl.lang.core.Address;
 import io.sarl.lang.core.Agent;
 import io.sarl.lang.core.AtomicSkillReference;
@@ -56,6 +58,7 @@ import org.eclipse.xtext.xbase.lib.CollectionLiterals;
 import org.eclipse.xtext.xbase.lib.Conversions;
 import org.eclipse.xtext.xbase.lib.ExclusiveRange;
 import org.eclipse.xtext.xbase.lib.Extension;
+import org.eclipse.xtext.xbase.lib.Procedures.Procedure1;
 import org.eclipse.xtext.xbase.lib.Pure;
 import org.eclipse.xtext.xbase.lib.XbaseGenerated;
 import sokoban.environment.maze.AgentBody;
@@ -124,11 +127,13 @@ public class Environment extends Agent {
     Logger _logger = Logger.getLogger(this.getID().toString());
     Player _player = new Player(_agentId, _logger);
     this.player = _player;
+    MazeManager _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER_1 = this.$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER();
+    _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER_1.createBoxes(2);
     ExclusiveRange _doubleDotLessThan_1 = new ExclusiveRange(0, ((nbGhosts) == null ? 0 : (nbGhosts).intValue()), true);
     for (final Integer i_1 : _doubleDotLessThan_1) {
       {
-        MazeManager _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER_1 = this.$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER();
-        GhostBody ghostBody = _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER_1.createGhost(((perceptionDistance) == null ? 0 : (perceptionDistance).intValue()));
+        MazeManager _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER_2 = this.$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER();
+        GhostBody ghostBody = _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER_2.createGhost(((perceptionDistance) == null ? 0 : (perceptionDistance).intValue()));
         Lifecycle _$CAPACITY_USE$IO_SARL_API_CORE_LIFECYCLE$CALLER = this.$CAPACITY_USE$IO_SARL_API_CORE_LIFECYCLE$CALLER();
         DefaultContextInteractions _$CAPACITY_USE$IO_SARL_API_CORE_DEFAULTCONTEXTINTERACTIONS$CALLER_2 = this.$CAPACITY_USE$IO_SARL_API_CORE_DEFAULTCONTEXTINTERACTIONS$CALLER();
         _$CAPACITY_USE$IO_SARL_API_CORE_LIFECYCLE$CALLER.spawnInContextWithID(Ghost.class, ghostBody.getAgentId(), _$CAPACITY_USE$IO_SARL_API_CORE_DEFAULTCONTEXTINTERACTIONS$CALLER_2.getDefaultContext());
@@ -137,6 +142,11 @@ public class Environment extends Agent {
     this.firePlayerBinding();
     this.fireControllerBinding();
     this.fireEnvironmentChange();
+    Schedules _$CAPACITY_USE$IO_SARL_API_CORE_SCHEDULES$CALLER = this.$CAPACITY_USE$IO_SARL_API_CORE_SCHEDULES$CALLER();
+    final Procedure1<Agent> _function = (Agent it) -> {
+      this.checkAndProcessPlayerMovement();
+    };
+    _$CAPACITY_USE$IO_SARL_API_CORE_SCHEDULES$CALLER.every(50, _function);
   }
 
   protected void fireEnvironmentChange() {
@@ -237,11 +247,73 @@ public class Environment extends Agent {
 
   @Pure
   private boolean $behaviorUnitGuard$Action$2(final Action it, final Action occurrence) {
-    throw new Error("Unresolved compilation problems:"
-      + "\nType mismatch: cannot convert from boolean to boolean");
+    return (occurrence.time >= it.time);
   }
 
-  private void $behaviorUnit$RunEndOfStep$3(final RunEndOfStep occurrence) {
+  private void $behaviorUnit$MoveUp$3(final MoveUp occurrence) {
+    synchronized (this) {
+      Direction avatarDirection = Direction.NORTH;
+      this.player.move(avatarDirection);
+      this.processPlayerMovement();
+    }
+  }
+
+  private void $behaviorUnit$MoveDown$4(final MoveDown occurrence) {
+    synchronized (this) {
+      Direction avatarDirection = Direction.SOUTH;
+      this.player.move(avatarDirection);
+      this.processPlayerMovement();
+    }
+  }
+
+  private void $behaviorUnit$MoveLeft$5(final MoveLeft occurrence) {
+    synchronized (this) {
+      Direction avatarDirection = Direction.WEST;
+      this.player.move(avatarDirection);
+      this.processPlayerMovement();
+    }
+  }
+
+  private void $behaviorUnit$MoveRight$6(final MoveRight occurrence) {
+    synchronized (this) {
+      Direction avatarDirection = Direction.EAST;
+      this.player.move(avatarDirection);
+      this.processPlayerMovement();
+    }
+  }
+
+  protected void processPlayerMovement() {
+    Direction avatarDirection = this.player.consumeDirection();
+    if ((avatarDirection != null)) {
+      UUID _bodyId = this.player.getBodyId();
+      MazeChangeQuery avatarAction = new MazeChangeQuery(_bodyId, avatarDirection);
+      this.actions.add(avatarAction);
+      MazeManager _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER = this.$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER();
+      _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER.getSuperPowerAccessor(this.player.getBodyId()).decreaseSuperPower();
+      MazeManager _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER_1 = this.$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER();
+      boolean _applyActions = _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER_1.applyActions(this.actions);
+      if (_applyActions) {
+        DefaultContextInteractions _$CAPACITY_USE$IO_SARL_API_CORE_DEFAULTCONTEXTINTERACTIONS$CALLER = this.$CAPACITY_USE$IO_SARL_API_CORE_DEFAULTCONTEXTINTERACTIONS$CALLER();
+        sokobanIsDead _sokobanIsDead = new sokobanIsDead();
+        _$CAPACITY_USE$IO_SARL_API_CORE_DEFAULTCONTEXTINTERACTIONS$CALLER.emit(_sokobanIsDead);
+        this.fireGameOver();
+        Lifecycle _$CAPACITY_USE$IO_SARL_API_CORE_LIFECYCLE$CALLER = this.$CAPACITY_USE$IO_SARL_API_CORE_LIFECYCLE$CALLER();
+        _$CAPACITY_USE$IO_SARL_API_CORE_LIFECYCLE$CALLER.killMe();
+      } else {
+        this.time++;
+        this.fireEnvironmentChange();
+        this.actions.clear();
+        MazeManager _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER_2 = this.$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER();
+        Set<Map.Entry<AgentBody, List<sokobanObject>>> _entrySet = _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER_2.getPerceptions().entrySet();
+        for (final Map.Entry<AgentBody, List<sokobanObject>> e : _entrySet) {
+          MazeFrontEnd _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEFRONTEND$CALLER = this.$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEFRONTEND$CALLER();
+          _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEFRONTEND$CALLER.sendPerception(this.time, e.getKey().getAgentId(), e.getValue(), e.getKey().getPosition());
+        }
+      }
+    }
+  }
+
+  private void $behaviorUnit$RunEndOfStep$7(final RunEndOfStep occurrence) {
     synchronized (this) {
       Direction avatarDirection = this.player.consumeDirection();
       UUID _bodyId = this.player.getBodyId();
@@ -267,14 +339,27 @@ public class Environment extends Agent {
     }
   }
 
-  private void $behaviorUnit$RunBeginingOfStep$4(final RunBeginingOfStep occurrence) {
+  private void $behaviorUnit$RunBeginingOfStep$8(final RunBeginingOfStep occurrence) {
     synchronized (this) {
       this.actions.clear();
+      Direction pendingDir = this.player.getDirection();
+      if ((pendingDir != null)) {
+        this.processPlayerMovement();
+      }
       MazeManager _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER = this.$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER();
       Set<Map.Entry<AgentBody, List<sokobanObject>>> _entrySet = _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEMANAGER$CALLER.getPerceptions().entrySet();
       for (final Map.Entry<AgentBody, List<sokobanObject>> e : _entrySet) {
         MazeFrontEnd _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEFRONTEND$CALLER = this.$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEFRONTEND$CALLER();
         _$CAPACITY_USE$SOKOBAN_ENVIRONMENT_AGENT_MAZEFRONTEND$CALLER.sendPerception(this.time, e.getKey().getAgentId(), e.getValue(), e.getKey().getPosition());
+      }
+    }
+  }
+
+  protected void checkAndProcessPlayerMovement() {
+    synchronized (this) {
+      Direction pendingDir = this.player.getDirection();
+      if ((pendingDir != null)) {
+        this.processPlayerMovement();
       }
     }
   }
@@ -335,6 +420,34 @@ public class Environment extends Agent {
     return $castSkill(Lifecycle.class, this.$CAPACITY_USE$IO_SARL_API_CORE_LIFECYCLE);
   }
 
+  @Extension
+  @ImportedCapacityFeature(Behaviors.class)
+  @SyntheticMember
+  private transient AtomicSkillReference $CAPACITY_USE$IO_SARL_API_CORE_BEHAVIORS;
+
+  @SyntheticMember
+  @Pure
+  private Behaviors $CAPACITY_USE$IO_SARL_API_CORE_BEHAVIORS$CALLER() {
+    if (this.$CAPACITY_USE$IO_SARL_API_CORE_BEHAVIORS == null || this.$CAPACITY_USE$IO_SARL_API_CORE_BEHAVIORS.get() == null) {
+      this.$CAPACITY_USE$IO_SARL_API_CORE_BEHAVIORS = $getSkill(Behaviors.class);
+    }
+    return $castSkill(Behaviors.class, this.$CAPACITY_USE$IO_SARL_API_CORE_BEHAVIORS);
+  }
+
+  @Extension
+  @ImportedCapacityFeature(Schedules.class)
+  @SyntheticMember
+  private transient AtomicSkillReference $CAPACITY_USE$IO_SARL_API_CORE_SCHEDULES;
+
+  @SyntheticMember
+  @Pure
+  private Schedules $CAPACITY_USE$IO_SARL_API_CORE_SCHEDULES$CALLER() {
+    if (this.$CAPACITY_USE$IO_SARL_API_CORE_SCHEDULES == null || this.$CAPACITY_USE$IO_SARL_API_CORE_SCHEDULES.get() == null) {
+      this.$CAPACITY_USE$IO_SARL_API_CORE_SCHEDULES = $getSkill(Schedules.class);
+    }
+    return $castSkill(Schedules.class, this.$CAPACITY_USE$IO_SARL_API_CORE_SCHEDULES);
+  }
+
   @SyntheticMember
   @PerceptGuardEvaluator
   private void $guardEvaluator$Destroy(final Destroy occurrence, final Collection<Runnable> ___SARLlocal_runnableCollection) {
@@ -363,10 +476,42 @@ public class Environment extends Agent {
 
   @SyntheticMember
   @PerceptGuardEvaluator
+  private void $guardEvaluator$MoveDown(final MoveDown occurrence, final Collection<Runnable> ___SARLlocal_runnableCollection) {
+    assert occurrence != null;
+    assert ___SARLlocal_runnableCollection != null;
+    ___SARLlocal_runnableCollection.add(() -> $behaviorUnit$MoveDown$4(occurrence));
+  }
+
+  @SyntheticMember
+  @PerceptGuardEvaluator
+  private void $guardEvaluator$MoveLeft(final MoveLeft occurrence, final Collection<Runnable> ___SARLlocal_runnableCollection) {
+    assert occurrence != null;
+    assert ___SARLlocal_runnableCollection != null;
+    ___SARLlocal_runnableCollection.add(() -> $behaviorUnit$MoveLeft$5(occurrence));
+  }
+
+  @SyntheticMember
+  @PerceptGuardEvaluator
+  private void $guardEvaluator$MoveRight(final MoveRight occurrence, final Collection<Runnable> ___SARLlocal_runnableCollection) {
+    assert occurrence != null;
+    assert ___SARLlocal_runnableCollection != null;
+    ___SARLlocal_runnableCollection.add(() -> $behaviorUnit$MoveRight$6(occurrence));
+  }
+
+  @SyntheticMember
+  @PerceptGuardEvaluator
+  private void $guardEvaluator$MoveUp(final MoveUp occurrence, final Collection<Runnable> ___SARLlocal_runnableCollection) {
+    assert occurrence != null;
+    assert ___SARLlocal_runnableCollection != null;
+    ___SARLlocal_runnableCollection.add(() -> $behaviorUnit$MoveUp$3(occurrence));
+  }
+
+  @SyntheticMember
+  @PerceptGuardEvaluator
   private void $guardEvaluator$RunBeginingOfStep(final RunBeginingOfStep occurrence, final Collection<Runnable> ___SARLlocal_runnableCollection) {
     assert occurrence != null;
     assert ___SARLlocal_runnableCollection != null;
-    ___SARLlocal_runnableCollection.add(() -> $behaviorUnit$RunBeginingOfStep$4(occurrence));
+    ___SARLlocal_runnableCollection.add(() -> $behaviorUnit$RunBeginingOfStep$8(occurrence));
   }
 
   @SyntheticMember
@@ -374,7 +519,7 @@ public class Environment extends Agent {
   private void $guardEvaluator$RunEndOfStep(final RunEndOfStep occurrence, final Collection<Runnable> ___SARLlocal_runnableCollection) {
     assert occurrence != null;
     assert ___SARLlocal_runnableCollection != null;
-    ___SARLlocal_runnableCollection.add(() -> $behaviorUnit$RunEndOfStep$3(occurrence));
+    ___SARLlocal_runnableCollection.add(() -> $behaviorUnit$RunEndOfStep$7(occurrence));
   }
 
   @SyntheticMember
@@ -384,6 +529,10 @@ public class Environment extends Agent {
     toBeFilled.add(Destroy.class);
     toBeFilled.add(Initialize.class);
     toBeFilled.add(Action.class);
+    toBeFilled.add(MoveDown.class);
+    toBeFilled.add(MoveLeft.class);
+    toBeFilled.add(MoveRight.class);
+    toBeFilled.add(MoveUp.class);
     toBeFilled.add(RunBeginingOfStep.class);
     toBeFilled.add(RunEndOfStep.class);
   }
@@ -398,6 +547,18 @@ public class Environment extends Agent {
       return true;
     }
     if (Action.class.isAssignableFrom(event)) {
+      return true;
+    }
+    if (MoveDown.class.isAssignableFrom(event)) {
+      return true;
+    }
+    if (MoveLeft.class.isAssignableFrom(event)) {
+      return true;
+    }
+    if (MoveRight.class.isAssignableFrom(event)) {
+      return true;
+    }
+    if (MoveUp.class.isAssignableFrom(event)) {
       return true;
     }
     if (RunBeginingOfStep.class.isAssignableFrom(event)) {
@@ -427,6 +588,22 @@ public class Environment extends Agent {
       final var occurrence = (Action) event;
       $guardEvaluator$Action(occurrence, callbacks);
     }
+    if (MoveDown.class.equals(eventType)) {
+      final var occurrence = (MoveDown) event;
+      $guardEvaluator$MoveDown(occurrence, callbacks);
+    }
+    if (MoveLeft.class.equals(eventType)) {
+      final var occurrence = (MoveLeft) event;
+      $guardEvaluator$MoveLeft(occurrence, callbacks);
+    }
+    if (MoveRight.class.equals(eventType)) {
+      final var occurrence = (MoveRight) event;
+      $guardEvaluator$MoveRight(occurrence, callbacks);
+    }
+    if (MoveUp.class.equals(eventType)) {
+      final var occurrence = (MoveUp) event;
+      $guardEvaluator$MoveUp(occurrence, callbacks);
+    }
     if (RunBeginingOfStep.class.equals(eventType)) {
       final var occurrence = (RunBeginingOfStep) event;
       $guardEvaluator$RunBeginingOfStep(occurrence, callbacks);
@@ -441,17 +618,26 @@ public class Environment extends Agent {
   @Pure
   @SyntheticMember
   public boolean equals(final Object obj) {
-    throw new Error("Unresolved compilation problems:"
-      + "\nThe return type is incompatible with equals(Object)"
-      + "\nThe return type is incompatible with equals(Object)");
+    if (this == obj)
+      return true;
+    if (obj == null)
+      return false;
+    if (getClass() != obj.getClass())
+      return false;
+    Environment other = (Environment) obj;
+    if (other.time != this.time)
+      return false;
+    return super.equals(obj);
   }
 
   @Override
   @Pure
   @SyntheticMember
   public int hashCode() {
-    throw new Error("Unresolved compilation problems:"
-      + "\nThe return type is incompatible with equals(Object)");
+    int result = super.hashCode();
+    final int prime = 31;
+    result = prime * result + Integer.hashCode(this.time);
+    return result;
   }
 
   @SyntheticMember

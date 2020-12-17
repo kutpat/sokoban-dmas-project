@@ -202,7 +202,10 @@ public class Maze {
     while ((!walls.isEmpty())) {
       {
         Maze.PrimWall diggeableWall = walls.remove(this.random.nextInt(walls.size()));
-        if (((((((diggeableWall.corridor.getX() >= 0) && (diggeableWall.corridor.getX() < this.width)) && (diggeableWall.corridor.getY() >= 0)) && (diggeableWall.corridor.getY() < this.height)) && (this.grid[diggeableWall.corridor.getX()][diggeableWall.corridor.getY()] instanceof WallObject)) && (this.grid[diggeableWall.passage.getX()][diggeableWall.passage.getY()] instanceof WallObject))) {
+        if (((((((diggeableWall.corridor.getX() >= 0) && (diggeableWall.corridor.getX() < this.width)) && 
+          (diggeableWall.corridor.getY() >= 0)) && (diggeableWall.corridor.getY() < this.height)) && 
+          (this.grid[diggeableWall.corridor.getX()][diggeableWall.corridor.getY()] instanceof WallObject)) && 
+          (this.grid[diggeableWall.passage.getX()][diggeableWall.passage.getY()] instanceof WallObject))) {
           this.grid[diggeableWall.passage.getX()][diggeableWall.passage.getY()] = null;
           this.grid[diggeableWall.corridor.getX()][diggeableWall.corridor.getY()] = null;
           this.addWallCandidate(walls, diggeableWall.corridor, diggeableWall.passageCandidate1);
@@ -242,16 +245,11 @@ public class Maze {
     int _y_10 = v.getY();
     int _y_11 = r.getY();
     Maze.PrimWall pw = new Maze.PrimWall(
-      (_x + _x_1), 
-      (_y + _y_1), 
-      (_x_2 + (2 * _x_3)), 
-      (_y_2 + (2 * _y_3)), 
-      (_x_4 + (3 * _x_5)), 
-      (_y_4 + (3 * _y_5)), 
-      ((_x_6 + (2 * _x_7)) + _x_8), 
-      ((_y_6 + (2 * _y_7)) + _y_8), 
-      ((_x_9 + (2 * _x_10)) - _x_11), 
-      ((_y_9 + (2 * _y_10)) - _y_11));
+      (_x + _x_1), (_y + _y_1), 
+      (_x_2 + (2 * _x_3)), (_y_2 + (2 * _y_3)), 
+      (_x_4 + (3 * _x_5)), (_y_4 + (3 * _y_5)), 
+      ((_x_6 + (2 * _x_7)) + _x_8), ((_y_6 + (2 * _y_7)) + _y_8), 
+      ((_x_9 + (2 * _x_10)) - _x_11), ((_y_9 + (2 * _y_10)) - _y_11));
     walls.add(pw);
   }
 
@@ -294,7 +292,8 @@ public class Maze {
       Constructor<T> cons = bodyType.getDeclaredConstructor(int.class, int.class, Maze.class, UUID.class, int.class);
       T body = cons.newInstance(Integer.valueOf(x), Integer.valueOf(y), this, id, Integer.valueOf(perceptionDistance));
       this.grid[x][y] = body;
-      this.bodies.put(id, body);
+      final T _converted_body = (T)body;
+      this.bodies.put(id, _converted_body);
       return body;
     } catch (Throwable _e) {
       throw Exceptions.sneakyThrow(_e);
@@ -406,6 +405,153 @@ public class Maze {
       };
     }
     return new SuperPowerAccessor();
+  }
+
+  /**
+   * Check if coordinates are within maze bounds.
+   * 
+   * @param x the x coordinate
+   * @param y the y coordinate
+   * @return true if coordinates are within bounds
+   */
+  @Pure
+  public synchronized boolean inBounds(final int x, final int y) {
+    return ((((x >= 0) && (y >= 0)) && (x < this.width)) && (y < this.height));
+  }
+
+  /**
+   * Check if a tile is walkable (no wall, no box, no blocking object).
+   * 
+   * @param x the x coordinate
+   * @param y the y coordinate
+   * @return true if the tile is walkable
+   */
+  @Pure
+  public synchronized boolean isWalkable(final int x, final int y) {
+    boolean _inBounds = this.inBounds(x, y);
+    if ((!_inBounds)) {
+      return false;
+    }
+    sokobanObject obj = this.grid[x][y];
+    if ((obj == null)) {
+      return true;
+    }
+    if (((obj instanceof WallObject) || (obj instanceof BoxObject))) {
+      return false;
+    }
+    if ((obj instanceof AgentBody)) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Check if a tile contains a box.
+   * 
+   * @param x the x coordinate
+   * @param y the y coordinate
+   * @return true if the tile contains a box
+   */
+  @Pure
+  public synchronized boolean isBox(final int x, final int y) {
+    boolean _inBounds = this.inBounds(x, y);
+    if ((!_inBounds)) {
+      return false;
+    }
+    sokobanObject obj = this.grid[x][y];
+    return (obj instanceof BoxObject);
+  }
+
+  /**
+   * Move a box from one position to another.
+   * 
+   * @param fromX source x coordinate
+   * @param fromY source y coordinate
+   * @param toX destination x coordinate
+   * @param toY destination y coordinate
+   * @return true if the box was successfully moved
+   */
+  public synchronized boolean moveBox(final int fromX, final int fromY, final int toX, final int toY) {
+    if (((!this.inBounds(fromX, fromY)) || (!this.inBounds(toX, toY)))) {
+      return false;
+    }
+    sokobanObject box = this.grid[fromX][fromY];
+    if ((!(box instanceof BoxObject))) {
+      return false;
+    }
+    sokobanObject destObj = this.grid[toX][toY];
+    if (((destObj != null) && (!destObj.isPickable()))) {
+      return false;
+    }
+    this.grid[fromX][fromY] = destObj;
+    this.grid[toX][toY] = box;
+    box.setPosition(toX, toY);
+    if ((destObj != null)) {
+      destObj.setPosition(fromX, fromY);
+    }
+    return true;
+  }
+
+  /**
+   * Move the player by the given delta.
+   * 
+   * @param playerBody the player body to move
+   * @param dx delta x
+   * @param dy delta y
+   * @return true if the player was successfully moved
+   */
+  public synchronized boolean movePlayer(final AgentBody playerBody, final int dx, final int dy) {
+    if ((playerBody == null)) {
+      return false;
+    }
+    Point2i pos = playerBody.getPosition();
+    int oldX = pos.getX();
+    int oldY = pos.getY();
+    int newX = (oldX + dx);
+    int newY = (oldY + dy);
+    boolean _inBounds = this.inBounds(newX, newY);
+    if ((!_inBounds)) {
+      return false;
+    }
+    boolean _isWalkable = this.isWalkable(newX, newY);
+    if ((!_isWalkable)) {
+      boolean _isBox = this.isBox(newX, newY);
+      if (_isBox) {
+        int boxNewX = (newX + dx);
+        int boxNewY = (newY + dy);
+        boolean _isWalkable_1 = this.isWalkable(boxNewX, boxNewY);
+        if (_isWalkable_1) {
+          boolean _moveBox = this.moveBox(newX, newY, boxNewX, boxNewY);
+          if (_moveBox) {
+            sokobanObject destObj = this.grid[newX][newY];
+            sokobanObject oldPosObj = this.grid[oldX][oldY];
+            if ((oldPosObj == playerBody)) {
+              this.grid[oldX][oldY] = null;
+            }
+            this.grid[newX][newY] = playerBody;
+            playerBody.setPosition(newX, newY);
+            if (((destObj != null) && (destObj != playerBody))) {
+              this.grid[oldX][oldY] = destObj;
+              destObj.setPosition(oldX, oldY);
+            }
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    sokobanObject destObj_1 = this.grid[newX][newY];
+    sokobanObject oldPosObj_1 = this.grid[oldX][oldY];
+    if ((oldPosObj_1 == playerBody)) {
+      this.grid[oldX][oldY] = null;
+    }
+    this.grid[newX][newY] = playerBody;
+    playerBody.setPosition(newX, newY);
+    if (((destObj_1 != null) && (destObj_1 != playerBody))) {
+      this.grid[oldX][oldY] = destObj_1;
+      destObj_1.setPosition(oldX, oldY);
+    }
+    return true;
   }
 
   @Override

@@ -30,6 +30,7 @@ import sokoban.environment.maze.Maze
 import sokoban.environment.maze.sokobanBody
 import sokoban.environment.maze.sokobanObject
 import sokoban.environment.maze.PillObject
+import sokoban.environment.maze.BoxObject
 import sokoban.environment.maze.SuperPowerAccessor
 import io.sarl.api.core.Behaviors
 import io.sarl.api.core.DefaultContextInteractions
@@ -50,37 +51,55 @@ import java.util.ArrayList
  * @mavenartifactid $ArtifactId$
  */
 capacity MazeManager {
-	
-	/** Replies the number of bodies in the maze */
+
+			/** Replies the number of bodies in the maze
+		 */
 	def getBodyCount : int
-	
+
 	/** Apply the list of actions.
-	 * @return true if the sokoban is dead. */
+	 * @return true if the sokoban is dead.
+	 */
 	def applyActions(actions : List<MazeChangeQuery>) : boolean
-	
-	/** Replies the perceptions. */
+
+	/** Replies the perceptions.
+	 */
 	def getPerceptions : Map<AgentBody, List<sokobanObject>>
-	
-	/** Replies the width of the maze. */
+
+	/** Replies the width of the maze.
+	 */
 	def getMazeWidth : int
 
-	/** Replies the height of the maze. */
+	/** Replies the height of the maze.
+	 */
 	def getMazeHeight : int
-	
-	/** Replies all the objects. */
+
+	/** Replies all the objects.
+	 */
 	def getsokobanObjects : List<sokobanObject>
 
-	/** Replies a specific body. */
+	/** Replies a specific body.
+	 */
 	def getAgentBody(id : UUID) : AgentBody
-	
-	/** Replies super power accessor. */
+
+	/** Replies super power accessor.
+	 */
 	def getSuperPowerAccessor(id : UUID) : SuperPowerAccessor
 
-	/** Create a ghost body. */
+	/** Create a ghost body.
+	 */
 	def createGhost(perceptionDistance : int) : GhostBody
 
-	/** Create a sokoban body. */
+	/** Create a sokoban body.
+	 */
 	def createsokoban() : sokobanBody
+
+	/** Create a box at the given position.
+	 */
+	def createBox(x : int, y : int) : boolean
+
+	/** Create boxes randomly in the maze.
+	 */
+	def createBoxes(numberOfBoxes : int) : void
 
 }
 
@@ -92,7 +111,7 @@ capacity MazeManager {
  * @mavenartifactid $ArtifactId$
  */
 capacity MazeFrontEnd {
-	
+
 	def sendPerception(time : int, bodyID : UUID, objects : List<sokobanObject>, position : Point2i)
 
 }
@@ -106,7 +125,7 @@ capacity MazeFrontEnd {
  */
 @DefaultSkill(typeof(DefaultMazeMotionSkill))
 capacity MazeMotion {
-	
+
 	def move(direction : Direction)
 
 }
@@ -119,39 +138,35 @@ capacity MazeMotion {
  * @mavenartifactid $ArtifactId$
  */
 skill DefaultMazeManagerSkill implements MazeManager {
-	
+
 	val random = new Random
-	
+
 	val width : int
 	val height : int
-	
+
 	var maze : Maze
-	
+
 	new (width : int, height : int) {
 		this.width = width
 		this.height = height
 	}
-	
+
 	def install {
 		this.maze = new Maze(this.width, this.height)
 	}
-	
+
 	def uninstall {
 		this.maze = null
 	}
-	
+
 	def getBodyCount : int {
 		this.maze.bodyCount
 	}
 
 	def applyActions(actions : List<MazeChangeQuery>) : boolean {
 
-		//System.out.println("eee")
-
-		
 		var lastActions = new TreeMap<UUID, Direction>
 		for (action : actions) {
-			
 			lastActions.put(action.emitter, action.change)
 		}
 
@@ -170,41 +185,66 @@ skill DefaultMazeManagerSkill implements MazeManager {
 
 		// Apply moves for each body that emitted an action
 		for (entry : lastActions.entrySet) {
-        val body = getAgentBody(entry.key)
+			val body = getAgentBody(entry.key)
 			if (body !== null) {
-				val pos = body.position
-				var nx = pos.x
-				var ny = pos.y
-				switch (entry.value) {
-					case Direction::NORTH: ny--
-					case Direction::SOUTH: ny++
-					case Direction::WEST: nx--
-					case Direction::EAST: nx++
-					default: {
+				// Check if this is the player (sokoban body)
+				if (body instanceof sokobanBody) {
+					// Use Sokoban movement rules with box pushing
+					var dx = 0
+					var dy = 0
+					switch (entry.value) {
+						case Direction::NORTH:
+							dy = -1
+						case Direction::SOUTH:
+							dy = 1
+						case Direction::WEST:
+							dx = -1
+						case Direction::EAST:
+							dx = 1
+						default: {
+						}
+					}
+					// Use the maze's movePlayer method which handles box pushing
+					maze.movePlayer(body, dx, dy)
+				} else {
+					// For other bodies (ghosts), use simple movement
+					val pos = body.position
+					var nx = pos.x
+					var ny = pos.y
+					switch (entry.value) {
+						case Direction::NORTH:
+							ny--
+						case Direction::SOUTH:
+							ny++
+						case Direction::WEST:
+							nx--
+						case Direction::EAST:
+							nx++
+						default: {
+						}
+					}
+					// Check bounds and walkability for ghosts
+					if (nx >= 0 && ny >= 0 && nx < this.width && ny < this.height) {
+						if (maze.isWalkable(nx, ny)) {
+							maze.setObjectAt(nx, ny, body)
+						}
 					}
 				}
-				// maze bounds
-				if(nx < 0) nx = 0
-            if (ny < 0) ny = 0
-            if (nx >= this.width) nx = this.width - 1
-            if (ny >= this.height) ny = this.height - 1
-				// Update the body position
-				maze.setObjectAt(nx, ny, body)
 			}
 		}
 
 		// Collision with ghosts
-    if (sokoban !== null) {
+		if (sokoban !== null) {
 			for (g : ghosts) {
-            if (g.position.equals(sokoban.position)) {
+				if (g.position.equals(sokoban.position)) {
 					sokobanDead = true
-                break
+					break
 				}
 			}
 		}
 
 		return sokobanDead
-}
+	}
 	
 	def in(v : int, r : IntegerRange) : boolean {
 		r.contains(v)
@@ -219,44 +259,43 @@ skill DefaultMazeManagerSkill implements MazeManager {
 		var cellContent = this.maze.getObjectAt(x, y)
 		return cellContent.isOccluder
 	}
-	
+
 	def getPerceptions : Map<AgentBody, List<sokobanObject>> {
-		//System.out.println("ddd")
+		// System.out.println("ddd")
 		var perceptions = new TreeMap
-		
+
 		var bodies : List<AgentBody>
-		if(bodies === null){
+		if (bodies === null) {
 			return perceptions
 		}
 		// I implemented an algorithm to see which objects are within distance d and one direction (and no walls in between)
 		// Like a "Line of Sight"
-		
-		// P.S: I purposely did not use the method shown in lecture. 
+		// P.S: I purposely did not use the method shown in lecture.
 		// The algorithm from the lecture is for sure more efficient but I wanted to do better than copy paste! :)
-		for(b : bodies){
+		for (b : bodies) {
 			var seen = new ArrayList<sokobanObject>
 			var bp = b.position
 			var d = b.perceptionDistance
-			
-			if(d > 0){
-				for (o: bodies){
-					if (o !== b){
+
+			if (d > 0) {
+				for (o : bodies) {
+					if (o !== b) {
 						val op = o.position
 						val dx = Math::abs(op.x - bp.x)
 						val dy = Math::abs(op.y - bp.y)
-						
+
 						var visible = false
-						
+
 						// If there is an object on the x-axis
-						if (dy==0 && dx <= d){
-							val stepX = (dx > 0) ? 1 : -1 //step direction
+						if (dy == 0 && dx <= d) {
+							val stepX = (dx > 0) ? 1 : -1 // step direction
 							var x = bp.x + stepX
 							var y = bp.y
 							visible = true
-							
+
 							// go to the object
-							while(x != op.x){
-								if(!isInside(x, y) || cellIsOccluder(x,y)){
+							while (x != op.x) {
+								if (!isInside(x, y) || cellIsOccluder(x, y)) {
 									visible = false
 									break
 								}
@@ -280,40 +319,33 @@ skill DefaultMazeManagerSkill implements MazeManager {
 								y += stepY
 							}
 						}
-						
-						if(visible){
+
+						if (visible) {
 							seen += o
 						}
-						
+
 					}
 				}
 			}
-			
-			
+
 			perceptions.put(b, seen)
 		}
-		
-		
+
 		return perceptions
 	}
-	
-	
-	
-	
-	
-	
+
 	def getMazeHeight : int {
 		this.height
 	}
-	
+
 	def getMazeWidth : int {
 		this.width
 	}
-	
+
 	def getsokobanObjects : List<sokobanObject> {
 		var list = newArrayList
-		for (i : 0..<this.width) {
-			for (j : 0..<this.height) {
+		for (i : 0 ..< this.width) {
+			for (j : 0 ..< this.height) {
 				var o = this.maze.getObjectAt(i, j)
 				if (o !== null) {
 					list += o
@@ -322,7 +354,7 @@ skill DefaultMazeManagerSkill implements MazeManager {
 		}
 		return list
 	}
-	
+
 	def getAgentBody(id : UUID) : AgentBody {
 		this.maze.getAgentBody(id)
 	}
@@ -334,11 +366,39 @@ skill DefaultMazeManagerSkill implements MazeManager {
 	def createGhost(perceptionDistance : int) : GhostBody {
 		this.maze.createBody(typeof(GhostBody), null, perceptionDistance);
 	}
-	
+
 	def createsokoban : sokobanBody {
 		this.maze.createBody(typeof(sokobanBody), null, 0);
 	}
-	
+
+	def createBox(x : int, y : int) : boolean {
+		if (this.maze.inBounds(x, y) && this.maze.isWalkable(x, y)) {
+			var obj = this.maze.getObjectAt(x, y)
+			if (obj === null || obj.pickable) {
+				var box = new BoxObject(x, y, this.maze)
+				this.maze.setObjectAt(x, y, box)
+				return true
+			}
+		}
+		return false
+	}
+
+	def createBoxes(numberOfBoxes : int) : void {
+		var boxesCreated = 0
+		var attempts = 0
+		val maxAttempts = 1000
+
+		while (boxesCreated < numberOfBoxes && attempts < maxAttempts) {
+			attempts++
+			var x = this.random.nextInt(this.width)
+			var y = this.random.nextInt(this.height)
+
+			if (createBox(x, y)) {
+				boxesCreated++
+			}
+		}
+	}
+
 }
 
 /** Skill for being the front-end of a maze.
@@ -349,22 +409,22 @@ skill DefaultMazeManagerSkill implements MazeManager {
  * @mavenartifactid $ArtifactId$
  */
 skill DefaultMazeFrontEndSkill implements MazeFrontEnd {
-	
+
 	uses DefaultContextInteractions, Behaviors
-	
+
 	var mazeSpace : MazeSpace
-	
+
 	def install {
 		var spaceId = MazeSpaceUtils.getSpaceIDInContext(defaultContext)
-		this.mazeSpace = defaultContext.getOrCreateSpaceWithSpec(typeof(MazeSpaceSpecification), spaceId,
-			defaultSpace, asEventListener)
+		this.mazeSpace = defaultContext.getOrCreateSpaceWithSpec(typeof(MazeSpaceSpecification), spaceId, defaultSpace,
+			asEventListener)
 	}
-	
+
 	def sendPerception(time : int, bodyID : UUID, objects : List<sokobanObject>, position : Point2i) {
 		var p = new Perception(time, bodyID, objects, position)
 		this.mazeSpace.notifyPerception(owner.ID, p)
 	}
-	
+
 }
 
 /** Default implementation of the MazeMotion capacity.
@@ -375,13 +435,13 @@ skill DefaultMazeFrontEndSkill implements MazeFrontEnd {
  * @mavenartifactid $ArtifactId$
  */
 skill DefaultMazeMotionSkill implements MazeMotion {
-	
+
 	uses DefaultContextInteractions, Behaviors
-	
+
 	var ^space : MazeSpace
-	
+
 	var binder : SkillBinder
-	
+
 	def install {
 		var dc = defaultContext
 		var spaceId = MazeSpaceUtils::getSpaceIDInContext(dc)
@@ -392,11 +452,11 @@ skill DefaultMazeMotionSkill implements MazeMotion {
 		this.binder = new SkillBinder(asEventListener, owner.ID)
 		this.^space.spawnBody(this.binder)
 	}
-	
+
 	def uninstall {
 		this.^space.killBody(this.binder)
 	}
-	
+
 	def move(direction : Direction) {
 		this.^space.influence(this.binder.currentTime, this.binder.ID, direction)
 	}
