@@ -26,6 +26,7 @@ import io.sarl.lang.core.annotation.SarlElementType;
 import io.sarl.lang.core.annotation.SarlSpecification;
 import io.sarl.lang.core.annotation.SyntheticMember;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -45,15 +46,8 @@ import sokoban.environment.maze.Maze;
 import sokoban.environment.maze.SuperPowerAccessor;
 import sokoban.environment.maze.sokobanBody;
 import sokoban.environment.maze.sokobanObject;
+import sokoban.rl.SokobanState;
 
-/**
- * Skill for managing a maze.
- * 
- * @author $Author: sgalland$
- * @version $FullVersion$
- * @mavengroupid $GroupId$
- * @mavenartifactid $ArtifactId$
- */
 @SarlSpecification("0.15")
 @SarlElementType(22)
 @XbaseGenerated
@@ -186,89 +180,151 @@ public class DefaultMazeManagerSkill extends Skill implements MazeManager {
 
   @Pure
   public boolean isInside(final int x, final int y) {
-    return ((((x >= 0) && (y >= 0)) && (x < this.width)) && (y < this.width));
+    return ((((x >= 0) && (y >= 0)) && (x < this.width)) && (y < this.height));
   }
 
   @Pure
   public boolean cellIsOccluder(final int x, final int y) {
     sokobanObject cellContent = this.maze.getObjectAt(x, y);
+    if ((cellContent == null)) {
+      return false;
+    }
     return cellContent.isOccluder();
+  }
+
+  /**
+   * Check if there's a clear line-of-sight between two points using Bresenham's line algorithm.
+   * Returns true if the path is clear (no occluders blocking the view).
+   */
+  @Pure
+  public boolean hasLineOfSight(final int x1, final int y1, final int x2, final int y2) {
+    if (((x1 == x2) && (y1 == y2))) {
+      return true;
+    }
+    int dx = Math.abs((x2 - x1));
+    int dy = Math.abs((y2 - y1));
+    int _xifexpression = (int) 0;
+    if ((x1 < x2)) {
+      _xifexpression = 1;
+    } else {
+      _xifexpression = (-1);
+    }
+    int sx = _xifexpression;
+    int _xifexpression_1 = (int) 0;
+    if ((y1 < y2)) {
+      _xifexpression_1 = 1;
+    } else {
+      _xifexpression_1 = (-1);
+    }
+    int sy = _xifexpression_1;
+    int err = (dx - dy);
+    int x = x1;
+    int y = y1;
+    int maxSteps = ((dx + dy) + 1);
+    int steps = 0;
+    while ((steps < maxSteps)) {
+      {
+        if (((x == x2) && (y == y2))) {
+          return true;
+        }
+        if ((!((x == x1) && (y == y1)))) {
+          if (((!this.isInside(x, y)) || this.cellIsOccluder(x, y))) {
+            return false;
+          }
+        }
+        int e2 = (2 * err);
+        if ((e2 > (-dy))) {
+          err = (err - dy);
+          x = (x + sx);
+        }
+        if ((e2 < dx)) {
+          err = (err + dx);
+          y = (y + sy);
+        }
+        steps++;
+      }
+    }
+    return false;
   }
 
   @Pure
   public Map<AgentBody, List<sokobanObject>> getPerceptions() {
     TreeMap<AgentBody, List<sokobanObject>> perceptions = new TreeMap<AgentBody, List<sokobanObject>>();
-    List<AgentBody> bodies = null;
-    if ((bodies == null)) {
+    Collection<AgentBody> bodies = this.maze.getAgentBodies();
+    if (((bodies == null) || bodies.isEmpty())) {
+      System.out.println("[MazeManager] No agent bodies found for perception");
       return perceptions;
     }
+    int _size = bodies.size();
+    System.out.println((("[MazeManager] Getting perceptions for " + Integer.valueOf(_size)) + " agent body/bodies"));
+    ArrayList<sokobanObject> allObjects = new ArrayList<sokobanObject>();
+    int boxCount = 0;
+    for (int x = 0; (x < this.width); x++) {
+      for (int y = 0; (y < this.height); y++) {
+        {
+          sokobanObject obj = this.maze.getObjectAt(x, y);
+          if ((obj != null)) {
+            allObjects.add(obj);
+            if ((obj instanceof BoxObject)) {
+              boxCount++;
+            }
+          }
+        }
+      }
+    }
+    int _size_1 = allObjects.size();
+    System.out.println((((("[MazeManager] Total objects in maze: " + Integer.valueOf(_size_1)) + " (including ") + Integer.valueOf(boxCount)) + " boxes)"));
     for (final AgentBody b : bodies) {
       {
         ArrayList<sokobanObject> seen = new ArrayList<sokobanObject>();
         Point2i bp = b.getPosition();
         int d = b.getPerceptionDistance();
         if ((d > 0)) {
-          for (final AgentBody o : bodies) {
+          for (final sokobanObject o : allObjects) {
             if ((o != b)) {
               final Point2i op = o.getPosition();
               int _x = op.getX();
               int _x_1 = bp.getX();
-              final int dx = Math.abs((_x - _x_1));
+              final int dx = (_x - _x_1);
               int _y = op.getY();
               int _y_1 = bp.getY();
-              final int dy = Math.abs((_y - _y_1));
-              boolean visible = false;
-              if (((dy == 0) && (dx <= d))) {
-                int _xifexpression = (int) 0;
-                if ((dx > 0)) {
-                  _xifexpression = 1;
-                } else {
-                  _xifexpression = (-1);
-                }
-                final int stepX = _xifexpression;
-                int _x_2 = bp.getX();
-                int x = (_x_2 + stepX);
-                int y = bp.getY();
-                visible = true;
-                while ((x != op.getX())) {
-                  {
-                    if (((!this.isInside(x, y)) || this.cellIsOccluder(x, y))) {
-                      visible = false;
-                      break;
-                    }
-                    x = (x + stepX);
+              final int dy = (_y - _y_1);
+              int _abs = Math.abs(dx);
+              int _abs_1 = Math.abs(dy);
+              final int manhattanDist = (_abs + _abs_1);
+              if (((manhattanDist <= d) && (manhattanDist > 0))) {
+                boolean visible = this.hasLineOfSight(bp.getX(), bp.getY(), op.getX(), op.getY());
+                if (visible) {
+                  seen.add(o);
+                  if ((o instanceof BoxObject)) {
+                    int _x_2 = bp.getX();
+                    int _y_2 = bp.getY();
+                    int _x_3 = op.getX();
+                    int _y_3 = op.getY();
+                    System.out.println((((((((("[MazeManager] Agent at (" + Integer.valueOf(_x_2)) + ";") + Integer.valueOf(_y_2)) + ") sees BoxObject at (") + Integer.valueOf(_x_3)) + ";") + Integer.valueOf(_y_3)) + ")"));
                   }
                 }
-              }
-              if (((dx == 0) && (dy <= d))) {
-                int _xifexpression_1 = (int) 0;
-                if ((dy > 0)) {
-                  _xifexpression_1 = 1;
-                } else {
-                  _xifexpression_1 = (-1);
-                }
-                final int stepY = _xifexpression_1;
-                int x_1 = bp.getX();
-                int _y_2 = bp.getY();
-                int y_1 = (_y_2 + stepY);
-                visible = true;
-                while ((y_1 != op.getY())) {
-                  {
-                    if (((!this.isInside(x_1, y_1)) || this.cellIsOccluder(x_1, y_1))) {
-                      visible = false;
-                      break;
-                    }
-                    y_1 = (y_1 + stepY);
-                  }
-                }
-              }
-              if (visible) {
-                seen.add(o);
               }
             }
           }
         }
+        int seenBoxes = 0;
+        for (final sokobanObject obj : seen) {
+          if ((obj instanceof BoxObject)) {
+            seenBoxes++;
+          }
+        }
+        if ((seenBoxes > 0)) {
+          int _x_4 = b.getPosition().getX();
+          int _y_4 = b.getPosition().getY();
+          int _size_2 = seen.size();
+          System.out.println((((((((("[MazeManager] Agent at (" + Integer.valueOf(_x_4)) + ";") + Integer.valueOf(_y_4)) + ") sees ") + Integer.valueOf(seenBoxes)) + " box(es) out of ") + Integer.valueOf(_size_2)) + " objects"));
+        }
         perceptions.put(b, seen);
+        int _x_5 = bp.getX();
+        int _y_5 = bp.getY();
+        int _size_3 = seen.size();
+        System.out.println((((((("[MazeManager] Agent at (" + Integer.valueOf(_x_5)) + ";") + Integer.valueOf(_y_5)) + ") sees ") + Integer.valueOf(_size_3)) + " object(s)"));
       }
     }
     return perceptions;
@@ -316,7 +372,7 @@ public class DefaultMazeManagerSkill extends Skill implements MazeManager {
   }
 
   public sokobanBody createsokoban() {
-    return this.maze.<sokobanBody>createBody(sokobanBody.class, null, 0);
+    return this.maze.<sokobanBody>createBody(sokobanBody.class, null, 5);
   }
 
   public boolean createBox(final int x, final int y) {
@@ -333,19 +389,259 @@ public class DefaultMazeManagerSkill extends Skill implements MazeManager {
 
   public void createBoxes(final int numberOfBoxes) {
     int boxesCreated = 0;
+    int startX = Math.max(2, (this.width / 4));
+    int startY = Math.max(2, (this.height / 3));
+    System.out.println(((((("[MazeManager] Creating " + Integer.valueOf(numberOfBoxes)) + " boxes, maze size: ") + Integer.valueOf(this.width)) + "x") + Integer.valueOf(this.height)));
+    int boxesPerRow = Math.min(3, numberOfBoxes);
+    int rows = (((numberOfBoxes + boxesPerRow) - 1) / boxesPerRow);
+    for (int row = 0; ((row < rows) && (boxesCreated < numberOfBoxes)); row++) {
+      for (int col = 0; ((col < boxesPerRow) && (boxesCreated < numberOfBoxes)); col++) {
+        {
+          int x = (startX + (col * 2));
+          int y = (startY + (row * 2));
+          if (((x < (this.width - 2)) && (y < (this.height - 2)))) {
+            boolean _createBox = this.createBox(x, y);
+            if (_createBox) {
+              boxesCreated++;
+              System.out.println((((((("[MazeManager] Created box #" + Integer.valueOf(boxesCreated)) + " at (") + Integer.valueOf(x)) + ";") + Integer.valueOf(y)) + ")"));
+            }
+          }
+        }
+      }
+    }
     int attempts = 0;
-    final int maxAttempts = 1000;
+    final int maxAttempts = 500;
     while (((boxesCreated < numberOfBoxes) && (attempts < maxAttempts))) {
       {
         attempts++;
-        int x = this.random.nextInt(this.width);
-        int y = this.random.nextInt(this.height);
+        int _nextInt = this.random.nextInt((this.width - 2));
+        int x = (_nextInt + 1);
+        int _nextInt_1 = this.random.nextInt((this.height - 2));
+        int y = (_nextInt_1 + 1);
         boolean _createBox = this.createBox(x, y);
         if (_createBox) {
           boxesCreated++;
         }
       }
     }
+  }
+
+  public boolean createExit(final int x, final int y) {
+    if ((this.maze.inBounds(x, y) && this.maze.isWalkable(x, y))) {
+      return this.maze.addExit(x, y);
+    }
+    return false;
+  }
+
+  public void createExits(final int numberOfExits) {
+    int exitsCreated = 0;
+    int startX = Math.max((this.width - 4), ((this.width * 3) / 4));
+    int startY = Math.max(2, (this.height / 3));
+    int exitsPerRow = Math.min(3, numberOfExits);
+    int rows = (((numberOfExits + exitsPerRow) - 1) / exitsPerRow);
+    for (int row = 0; ((row < rows) && (exitsCreated < numberOfExits)); row++) {
+      for (int col = 0; ((col < exitsPerRow) && (exitsCreated < numberOfExits)); col++) {
+        {
+          int x = (startX - (col * 2));
+          int y = (startY + (row * 2));
+          if (((((x > 1) && (x < (this.width - 1))) && (y > 1)) && (y < (this.height - 1)))) {
+            boolean _createExit = this.createExit(x, y);
+            if (_createExit) {
+              exitsCreated++;
+            }
+          }
+        }
+      }
+    }
+    int attempts = 0;
+    final int maxAttempts = 500;
+    while (((exitsCreated < numberOfExits) && (attempts < maxAttempts))) {
+      {
+        attempts++;
+        int _nextInt = this.random.nextInt((this.width - 2));
+        int x = (_nextInt + 1);
+        int _nextInt_1 = this.random.nextInt((this.height - 2));
+        int y = (_nextInt_1 + 1);
+        boolean _createExit = this.createExit(x, y);
+        if (_createExit) {
+          exitsCreated++;
+        }
+      }
+    }
+  }
+
+  public boolean allAgentsAtExit() {
+    final List<Point2i> exits = this.maze.getExits();
+    boolean _isEmpty = exits.isEmpty();
+    if (_isEmpty) {
+      return false;
+    }
+    final Collection<AgentBody> agentBodies = this.maze.getAgentBodies();
+    boolean _isEmpty_1 = agentBodies.isEmpty();
+    if (_isEmpty_1) {
+      return false;
+    }
+    ArrayList<AgentBody> agentBodiesToCheck = new ArrayList<AgentBody>();
+    for (final AgentBody body : agentBodies) {
+      if ((body instanceof sokobanBody)) {
+        agentBodiesToCheck.add(body);
+      }
+    }
+    boolean _isEmpty_2 = agentBodiesToCheck.isEmpty();
+    if (_isEmpty_2) {
+      return false;
+    }
+    for (final AgentBody body_1 : agentBodiesToCheck) {
+      {
+        Point2i agentPos = body_1.getPosition();
+        boolean atExit = false;
+        for (final Point2i exitPos : exits) {
+          boolean _equals = agentPos.equals(exitPos);
+          if (_equals) {
+            atExit = true;
+            break;
+          }
+        }
+        if ((!atExit)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  public boolean allBoxesOnGoals() {
+    final List<BoxObject> boxes = this.maze.getAllBoxes();
+    boolean _isEmpty = boxes.isEmpty();
+    if (_isEmpty) {
+      return false;
+    }
+    for (final BoxObject box : boxes) {
+      boolean _isOnTarget = box.isOnTarget();
+      if ((!_isOnTarget)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  @Pure
+  public List<Point2i> getExitPositions() {
+    return this.maze.getExits();
+  }
+
+  public SokobanState extractSokobanState(final int stepCount) {
+    throw new Error("Unresolved compilation problems:"
+      + "\nThe method newInstance(Class<boolean[]>, int) is undefined for the type Class<Array>"
+      + "\nThe method newInstance(Class<Boolean>, int) is undefined for the type Class<Array>"
+      + "\nPrimitives cannot be used as type arguments.");
+  }
+
+  public boolean executePlayerAction(final Direction direction) {
+    Collection<AgentBody> agentBodies = this.maze.getAgentBodies();
+    sokobanBody playerBody = null;
+    for (final AgentBody body : agentBodies) {
+      if ((body instanceof sokobanBody)) {
+        playerBody = ((sokobanBody)body);
+        break;
+      }
+    }
+    if ((playerBody == null)) {
+      return false;
+    }
+    int dx = 0;
+    int dy = 0;
+    if (direction != null) {
+      switch (direction) {
+        case NORTH:
+          dy = (-1);
+          break;
+        case SOUTH:
+          dy = 1;
+          break;
+        case EAST:
+          dx = 1;
+          break;
+        case WEST:
+          dx = (-1);
+          break;
+        default:
+          return false;
+      }
+    } else {
+      return false;
+    }
+    return this.maze.movePlayer(playerBody, dx, dy);
+  }
+
+  public int countBoxesOnTargets() {
+    int count = 0;
+    final List<Point2i> exits = this.maze.getExits();
+    boolean _isEmpty = exits.isEmpty();
+    if (_isEmpty) {
+      return 0;
+    }
+    ExclusiveRange _doubleDotLessThan = new ExclusiveRange(0, this.width, true);
+    for (final Integer i : _doubleDotLessThan) {
+      ExclusiveRange _doubleDotLessThan_1 = new ExclusiveRange(0, this.height, true);
+      for (final Integer j : _doubleDotLessThan_1) {
+        {
+          sokobanObject obj = this.maze.getObjectAt(((i) == null ? 0 : (i).intValue()), ((j) == null ? 0 : (j).intValue()));
+          if ((obj instanceof BoxObject)) {
+            Point2i boxPos = ((BoxObject)obj).getPosition();
+            for (final Point2i exitPos : exits) {
+              boolean _equals = boxPos.equals(exitPos);
+              if (_equals) {
+                count++;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+    return count;
+  }
+
+  public int countAgentsAtExit() {
+    int count = 0;
+    final List<Point2i> exits = this.maze.getExits();
+    boolean _isEmpty = exits.isEmpty();
+    if (_isEmpty) {
+      return 0;
+    }
+    final Collection<AgentBody> agentBodies = this.maze.getAgentBodies();
+    for (final AgentBody body : agentBodies) {
+      {
+        Point2i agentPos = body.getPosition();
+        for (final Point2i exitPos : exits) {
+          boolean _equals = agentPos.equals(exitPos);
+          if (_equals) {
+            count++;
+            break;
+          }
+        }
+      }
+    }
+    return count;
+  }
+
+  @Pure
+  public int getTotalBoxCount() {
+    int count = 0;
+    ExclusiveRange _doubleDotLessThan = new ExclusiveRange(0, this.width, true);
+    for (final Integer i : _doubleDotLessThan) {
+      ExclusiveRange _doubleDotLessThan_1 = new ExclusiveRange(0, this.height, true);
+      for (final Integer j : _doubleDotLessThan_1) {
+        {
+          sokobanObject obj = this.maze.getObjectAt(((i) == null ? 0 : (i).intValue()), ((j) == null ? 0 : (j).intValue()));
+          if ((obj instanceof BoxObject)) {
+            count++;
+          }
+        }
+      }
+    }
+    return count;
   }
 
   @Override

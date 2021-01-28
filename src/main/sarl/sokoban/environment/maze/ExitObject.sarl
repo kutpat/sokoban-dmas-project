@@ -1,0 +1,43 @@
+/* 
+ * Exit object in the Sokoban environment.
+ * 
+ * Agents must reach exits to complete the simulation.
+ */
+package sokoban.environment.maze
+
+import org.eclipse.xtext.xbase.lib.Pure
+import framework.math.Point2i
+
+/**
+ * Exit in the sokoban environment.
+ * Agents can reach exits to complete the simulation.
+ * 
+ * @author Generated
+ */
+class ExitObject extends sokobanObject {
+
+	new (x : int, y : int, maze : Maze) {
+		super(x, y, maze)
+	}
+
+	new (position : Point2i, maze : Maze) {
+		super(position, maze)
+	}
+
+	@Pure
+	final def isOccluder : boolean {
+		false
+	}
+
+	@Pure
+	final def isPickable : boolean {
+		false
+	}
+
+}
+
+
+
+
+
+

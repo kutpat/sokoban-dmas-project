@@ -1,0 +1,4422 @@
+/* 
+ * Autonomous Sokoban agent that collaborates with other agents.
+ * 
+ * This agent can:
+ * - Move autonomously
+ * - Push boxes
+ * - Communicate with other agents
+ * - Coordinate to reach exits
+ */
+package sokoban.players
+
+import sokoban.environment.^agent.Perception
+import sokoban.environment.^agent.DefaultMazeMotionSkill
+import sokoban.environment.^agent.MazeMotion
+import io.sarl.lang.core.DefaultSkill
+import sokoban.environment.^agent.RequestHelp
+import sokoban.environment.^agent.OfferHelp
+import sokoban.environment.^agent.CoordinatePush
+// Removed AgentReachedExit import - agents don't target exits anymore
+import sokoban.environment.^agent.BoxTask
+import sokoban.environment.^agent.ProposeBoxTask
+import sokoban.environment.^agent.AcceptBoxTask
+import sokoban.environment.^agent.ReadyForPush
+import sokoban.environment.^agent.BoxTaskCompleted
+import sokoban.environment.^agent.BoxDiscovered
+import sokoban.environment.^agent.ExitDiscovered
+import sokoban.environment.^agent.InitialKnowledge
+import sokoban.environment.^agent.BoxClaimed
+import sokoban.environment.^agent.AgentPositionBroadcast
+import sokoban.environment.^agent.BoxPositionUpdate
+import sokoban.environment.^agent.BoxCompleted
+import sokoban.environment.^agent.PathProposal
+import sokoban.environment.^agent.ProposalResponse
+import sokoban.environment.^agent.BoxTaskFormation
+import sokoban.environment.^agent.JoinBoxTask
+import sokoban.environment.^agent.BoxAssignment
+import sokoban.environment.^agent.PathVisualization
+import sokoban.environment.^agent.CollaborativeBoxTask
+import sokoban.environment.^agent.ReadyToHelp
+import sokoban.environment.maze.Direction
+import sokoban.environment.maze.sokobanObject
+import sokoban.environment.maze.BoxObject
+import sokoban.environment.maze.ExitObject
+import framework.math.Point2i
+import io.sarl.api.core.DefaultContextInteractions
+import io.sarl.api.core.Initialize
+import io.sarl.api.core.Lifecycle
+import java.util.ArrayList
+import java.util.List
+import java.util.Random
+import java.util.LinkedList
+import java.util.HashSet
+import java.util.Set
+import java.util.Map
+import java.util.HashMap
+import java.util.UUID
+import sokoban.environment.maze.WallObject
+
+/**
+ * Autonomous Sokoban agent that collaborates with other agents.
+ * 
+ * This agent makes autonomous decisions to:
+ * - Move toward exits
+ * - Push boxes to clear paths
+ * - Communicate with other agents for coordination
+ */
+@DefaultSkill(typeof(DefaultMazeMotionSkill))
+agent SokobanAgent {
+	
+	uses DefaultContextInteractions, Lifecycle, MazeMotion, MazeManager
+	
+	var currentTime = 0
+	var myPosition : Point2i
+	
+	// Global knowledge (provided at initialization)
+	var allBoxPositions = <Point2i>newHashSet  // All box positions (physical existence - always maintained)
+	var allExitPositions = <Point2i>newHashSet  // All exit positions (read-only after InitialKnowledge)
+	var completedBoxes = <Point2i>newHashSet  // Boxes that are completed (on exit) - affects selection only
+	
+	// Decentralized box claiming
+	var claimedBoxes = <Point2i>newHashSet  // Boxes claimed by other agents (observed via BoxClaimed events)
+	var myClaimedBox : Point2i  // Box this agent has claimed locally (null if none)
+	var myTargetExit : Point2i  // Exit this agent is pushing its box toward
+	
+	// Agent behavior phases
+	var agentBehaviorPhase : String  // "PLANNING", "ALIGNMENT", "PUSH_EXECUTION", "TASK_COMPLETION"
+	var myPushPosition : Point2i  // Position agent should be in for pushing (behind box)
+	var lastBoxPosition : Point2i  // Last known position of claimed box (for progress tracking)
+	
+	// Coordination state for planning and negotiation
+	var pathProposals = <PathProposal>newArrayList  // All proposals from other agents
+	var myProposals = <Point2i, PathProposal>newHashMap  // My proposals for each box (boxPos -> proposal)
+	var negotiationTimeout = 0  // Counter for negotiation phase
+	val maxNegotiationSteps = 3  // Wait N steps for all proposals before deciding
+	var coordinationActive = false  // Whether coordination is currently active
+	var proposalsEmitted = false  // Whether proposals have been emitted in current planning cycle
+	
+	// Collaborative coordination state
+	var activeBoxTask : Point2i = null  // Box we're working on as a team
+	var teamMembers = <UUID>newHashSet  // Other agents on the same team
+	var teamFormationTimeout = 0  // Counter for team formation phase
+	val maxTeamFormationSteps = 5  // Max steps to wait for team formation
+	var activeBoxTasks = <Point2i, BoxTaskFormation>newHashMap  // Track all active box tasks
+	var myTaskRole : String = null  // "PUSHER" or "HELPER" - role in team
+	var helperReadyAgents = <UUID>newHashSet  // Track which helpers are ready (informational only)
+	
+	// Path planning for box pushing
+	var plannedBoxPath = <Point2i>newLinkedList  // Planned path from box to exit
+	var currentPathStep = 0  // Current step in the planned path
+	var pathPlanned = false  // Whether a path has been planned for current box
+	
+	// Action gating: prevent multiple actions per perception
+	var actionEmittedThisStep = false
+	var lastPerceptionTime = -1
+	
+	// Agent position tracking for blocking detection
+	var otherAgentPositions = <UUID, Point2i>newHashMap  // Track positions of other agents
+	var otherAgentTargets = <UUID, Point2i>newHashMap  // Track target boxes of other agents
+	var otherAgentPhases = <UUID, String>newHashMap  // Track behavior phases of other agents
+	var assignedExits = <Point2i>newHashSet  // Track exits that are already assigned to agents
+	var positionBroadcastCounter = 0  // Counter for periodic position broadcasts
+	
+	// Progress tracking
+	var previousBoxPositions = <Point2i>newHashSet  // Track box positions from previous step
+	var boxProgressCount = 0  // Count of steps with box movement progress
+	
+	// Task completion timeout tracking
+	var taskCompletionSteps = 0  // Count of steps spent in TASK_COMPLETION phase
+	var alignmentSteps = 0  // Count of steps spent in ALIGNMENT phase
+	var lastAlignmentPosition : Point2i = null  // Last position during alignment (for stuck detection)
+	var recentPositions : List<Point2i> = newArrayList  // Track recent positions for oscillation detection
+	
+	// Push deadlock prevention
+	var pushStuckCounter = 0  // Count consecutive steps without box movement progress
+	val maxStuckSteps = 10  // Release claim after N steps without progress
+	val maxAlignmentSteps = 15  // Release claim after N steps stuck in alignment
+	var pushFailureCount = 0  // Count consecutive push action failures (box didn't move)
+	val maxPushFailures = 3  // Reposition after N consecutive push failures
+	
+	// Prevent immediate re-claiming after timeout
+	var recentlyReleasedBoxes = <Point2i, Integer>newHashMap  // Box position -> time when released
+	val releaseCooldownSteps = 5  // Don't re-claim a box for N steps after releasing it
+	
+	val random = new Random
+	
+	// Agent naming: assign alphabetical names (A, B, C, etc.) based on agent ID
+	var agentName : String = null
+	
+	/** Get agent name (A, B, C, etc.) for logging. */
+	def getAgentName : String {
+		if (this.agentName === null) {
+			// Generate name based on agent ID hash
+			// Use a simple hash to assign names consistently
+			var hash = ID.hashCode
+			var index = Math::abs(hash) % 26  // 0-25 for A-Z
+			this.agentName = Character::toString(('A' as char) + index)
+		}
+		return this.agentName
+	}
+	
+	on Initialize {
+		// Initialize decentralized behavior
+		this.agentBehaviorPhase = "PLANNING"  // Start with planning phase for coordination
+		this.myClaimedBox = null
+		this.myTargetExit = null
+		this.proposalsEmitted = false
+		this.myPushPosition = null
+		this.lastBoxPosition = null
+		this.plannedBoxPath.clear
+		this.currentPathStep = 0
+		this.pathPlanned = false
+		this.allBoxPositions.clear
+		this.allExitPositions.clear
+		this.completedBoxes.clear
+		this.claimedBoxes.clear
+		this.recentlyReleasedBoxes.clear
+		this.pathProposals.clear
+		this.myProposals.clear
+		this.negotiationTimeout = 0
+		this.coordinationActive = false
+		this.otherAgentPositions.clear
+		this.otherAgentTargets.clear
+		this.otherAgentPhases.clear
+		this.assignedExits.clear
+		this.positionBroadcastCounter = 0
+		this.pushStuckCounter = 0
+		this.pushFailureCount = 0
+		this.previousBoxPositions.clear
+		this.boxProgressCount = 0
+		// Initialize collaborative coordination state
+		this.activeBoxTask = null
+		this.teamMembers.clear
+		this.teamFormationTimeout = 0
+		this.activeBoxTasks.clear
+		this.myTaskRole = null
+		this.helperReadyAgents.clear
+		System.out.println("[Agent " + getAgentName + "] Initialized, waiting for InitialKnowledge (Phase: " + this.agentBehaviorPhase + ")")
+	}
+	
+	/** Receive initial knowledge of all boxes and exits from Environment. */
+	on InitialKnowledge {
+		this.allBoxPositions.clear
+		this.allExitPositions.clear
+		for (boxPos : occurrence.boxPositions) {
+			this.allBoxPositions.add(boxPos)
+		}
+		for (exitPos : occurrence.exitPositions) {
+			this.allExitPositions.add(exitPos)
+		}
+		System.out.println("[Agent " + getAgentName + "] Received InitialKnowledge: " + this.allBoxPositions.size + " boxes, " + this.allExitPositions.size + " exits")
+		// Now ready to select a box
+		if (this.agentBehaviorPhase == "BOX_SELECTION") {
+			System.out.println("[Agent " + getAgentName + "] Ready to select a box")
+		}
+	}
+	
+	/** Observe when other agents claim boxes (decentralized coordination). */
+	on BoxClaimed [!occurrence.claimerId.equals(ID)] {
+		var boxPos = occurrence.boxPosition
+		if (!this.claimedBoxes.contains(boxPos)) {
+			this.claimedBoxes.add(boxPos)
+			System.out.println("[Agent " + getAgentName + "] Observed box at " + boxPos + " claimed by agent " + occurrence.claimerId)
+		}
+		
+		// If we also claimed this box, resolve conflict using deterministic tie-breaker (agent ID comparison)
+		if (this.myClaimedBox !== null && this.myClaimedBox.x == boxPos.x && this.myClaimedBox.y == boxPos.y) {
+			// Both agents claimed the same box - use agent ID as tie-breaker (lower ID wins)
+			if (ID.compareTo(occurrence.claimerId) > 0) {
+				// Other agent has lower ID - they win, we release
+				System.out.println("[Agent " + getAgentName + "] Releasing box " + boxPos + " - another agent (" + occurrence.claimerId + ") claimed it first (tie-breaker)")
+				this.myClaimedBox = null
+				this.myTargetExit = null
+				this.myPushPosition = null
+				this.claimedBoxes.remove(boxPos)  // Remove from our claimed set since we're releasing
+				this.plannedBoxPath.clear
+				this.currentPathStep = 0
+				this.pathPlanned = false
+				this.agentBehaviorPhase = "BOX_SELECTION"  // Go back to selection
+			} else {
+			// We have lower ID - we win, keep the claim
+			System.out.println("[Agent " + getAgentName + "] Keeping box " + boxPos + " - we have priority (lower ID), staying in " + this.agentBehaviorPhase + " phase")
+			// Stay in current phase (ALIGNMENT) - don't reset
+			}
+		}
+	}
+	
+	/** Observe when other agents complete boxes (decentralized coordination).
+	 * When an agent confirms a box is on an exit, other agents update their state.
+	 */
+	/** Handle path proposals from other agents during coordination. */
+	on PathProposal [!occurrence.agentId.equals(ID)] {
+		// Store proposal from other agent (add to list, not overwrite)
+		this.pathProposals.add(occurrence)
+		System.out.println("[Agent " + getAgentName + "] Received PathProposal from agent " + occurrence.agentId + " for box at " + occurrence.boxPosition + " (score: " + occurrence.efficiencyScore + ")")
+	}
+	
+	/** Handle proposal responses from other agents during negotiation. */
+	on ProposalResponse {
+		if (occurrence.proposalAgentId.equals(ID)) {
+			// Response to my proposal
+			if (occurrence.accepted) {
+				System.out.println("[Agent " + getAgentName + "] Agent " + occurrence.responderId + " accepted my proposal for box at " + occurrence.boxPosition)
+			} else {
+				System.out.println("[Agent " + getAgentName + "] Agent " + occurrence.responderId + " rejected my proposal for box at " + occurrence.boxPosition + " (alternative score: " + occurrence.alternativeScore + ")")
+			}
+		}
+	}
+	
+	/** Handle team formation events - join a team working on a box. */
+	on BoxTaskFormation [!occurrence.initiatorId.equals(ID)] {
+		var boxPos = occurrence.boxPosition
+		
+		// Check if this box is already completed
+		if (this.completedBoxes.contains(boxPos)) {
+			return
+		}
+		
+		// Check if we're already in a team
+		if (this.activeBoxTask !== null && !this.activeBoxTask.equals(boxPos)) {
+			// Already working on a different box, ignore
+			return
+		}
+		
+		// Join the team (all agents are equal collaborators)
+		this.activeBoxTask = boxPos
+		this.myClaimedBox = boxPos  // Synchronize for compatibility
+		this.myTargetExit = occurrence.exitPosition
+		this.teamMembers.clear
+		for (memberId : occurrence.teamMembers) {
+			if (!memberId.equals(ID)) {
+				this.teamMembers.add(memberId)
+			}
+		}
+		// CRITICAL FIX: Convert List to LinkedList to avoid type mismatch
+		this.plannedBoxPath.clear
+		this.plannedBoxPath.addAll(occurrence.plannedPath)
+		this.currentPathStep = 0
+		this.pathPlanned = !this.plannedBoxPath.isEmpty
+		this.claimedBoxes.add(boxPos)  // Mark as claimed
+		
+		// Store task information
+		this.activeBoxTasks.put(boxPos, occurrence)
+		
+		System.out.println("[Agent " + getAgentName + "] Joined team for box at " + boxPos + " (initiator: " + occurrence.initiatorId + ", team size: " + occurrence.teamMembers.size + ")")
+		
+		// Transition to coordination phase
+		var oldPhase = this.agentBehaviorPhase
+		if (this.agentBehaviorPhase == "PLANNING") {
+			this.agentBehaviorPhase = "COORDINATION"
+			System.out.println("[Agent " + getAgentName + "] Transitioned from " + oldPhase + " to COORDINATION phase after joining team (activeBoxTask: " + this.activeBoxTask + ")")
+		} else {
+			System.out.println("[Agent " + getAgentName + "] Received BoxTaskFormation but phase is " + this.agentBehaviorPhase + " (not PLANNING), not transitioning")
+		}
+		
+		// Emit join event
+		emit(new JoinBoxTask(boxPos, ID, this.myPosition))
+	}
+	
+	/** Handle join requests from team members. */
+	on JoinBoxTask [!occurrence.agentId.equals(ID)] {
+		// Track team members (all agents are equal, no leader concept)
+		if (this.activeBoxTask !== null && this.activeBoxTask.equals(occurrence.boxPosition)) {
+			if (!this.teamMembers.contains(occurrence.agentId)) {
+				this.teamMembers.add(occurrence.agentId)
+				System.out.println("[Agent " + getAgentName + "] Team member " + occurrence.agentId + " joined box task at " + occurrence.boxPosition + " (team size: " + (this.teamMembers.size + 1) + ")")
+			}
+		}
+	}
+	
+	/** Handle box assignment events - update claimed boxes when other agents get assigned. */
+	on BoxAssignment {
+		var boxPos = occurrence.boxPosition
+		var assignedAgentId = occurrence.assignedAgentId
+		
+		// If I'm the assigned agent, I should already have this box claimed
+		if (assignedAgentId.equals(ID)) {
+			// This is my assignment - should already be handled in handlePlanning
+			System.out.println("[Agent " + getAgentName + "] Received my own BoxAssignment for box at " + boxPos)
+			return
+		}
+		
+		// Another agent got assigned this box - mark it as claimed
+		if (!this.claimedBoxes.contains(boxPos)) {
+			this.claimedBoxes.add(boxPos)
+			System.out.println("[Agent " + getAgentName + "] Observed box at " + boxPos + " assigned to agent " + assignedAgentId + ", marking as claimed")
+		}
+		
+		// Track the exit assigned to this agent (to avoid picking the same exit)
+		if (occurrence.exitPosition !== null) {
+			this.assignedExits.add(occurrence.exitPosition)
+			System.out.println("[Agent " + getAgentName + "] Tracked exit " + occurrence.exitPosition + " as assigned to agent " + assignedAgentId)
+		}
+		
+		// If I was working on this box but didn't get assigned, release my claim
+		if (this.myClaimedBox !== null && this.myClaimedBox.x == boxPos.x && this.myClaimedBox.y == boxPos.y) {
+			if (!assignedAgentId.equals(ID)) {
+				System.out.println("[Agent " + getAgentName + "] Releasing claim on box at " + boxPos + " (assigned to another agent)")
+				if (this.myClaimedBox !== null) {
+					this.claimedBoxes.remove(this.myClaimedBox)
+				}
+				this.myClaimedBox = null
+				this.myTargetExit = null
+				this.myPushPosition = null
+				this.plannedBoxPath.clear
+				this.currentPathStep = 0
+				this.pathPlanned = false
+				this.lastBoxPosition = null
+				this.agentBehaviorPhase = "PLANNING"  // Return to planning to coordinate remaining boxes
+				this.proposalsEmitted = false
+			}
+		}
+	}
+	
+	on BoxCompleted {
+		var boxPos = occurrence.boxPosition
+		System.out.println("[Agent " + getAgentName + "] Observed box at " + boxPos + " completed by agent " + occurrence.completerId)
+		
+		// CRITICAL FIX: If I was working on this box, return to PLANNING to coordinate on next box
+		if (this.myClaimedBox !== null && this.myClaimedBox.equals(boxPos)) {
+			System.out.println("[Agent " + getAgentName + "] BoxCompleted: My box at " + boxPos + " is completed, returning to PLANNING")
+			// Release claim and return to planning
+			this.myClaimedBox = null
+			this.myTargetExit = null
+			this.myPushPosition = null
+			this.lastBoxPosition = null
+			this.plannedBoxPath.clear
+			this.currentPathStep = 0
+			this.pathPlanned = false
+			this.agentBehaviorPhase = "PLANNING"
+			this.proposalsEmitted = false
+			this.alignmentSteps = 0
+			this.lastAlignmentPosition = null
+			this.recentPositions.clear
+			this.pushFailureCount = 0
+			this.pushStuckCounter = 0
+			cleanupTeamState
+			System.out.println("[Agent " + getAgentName + "] Released box and returned to PLANNING for coordination")
+		}
+		
+		// Mark box as completed (affects selection, not existence)
+		if (!this.completedBoxes.contains(boxPos)) {
+			this.completedBoxes.add(boxPos)
+			System.out.println("[Agent " + getAgentName + "] Marked box as completed in completedBoxes")
+		}
+		
+		// Remove from claimed boxes (box is no longer claimable)
+		if (this.claimedBoxes.contains(boxPos)) {
+			this.claimedBoxes.remove(boxPos)
+			System.out.println("[Agent " + getAgentName + "] Removed completed box from claimedBoxes")
+		}
+		
+		// DO NOT remove from allBoxPositions - box still exists physically
+		// allBoxPositions tracks physical existence, completedBoxes tracks task completion
+		// Note: Box release and PLANNING transition is already handled above (line 377)
+	}
+	
+	/** Handle collaborative box task announcements.
+	 * 
+	 * Agents update their state immediately when they receive this event - no waiting.
+	 */
+	on CollaborativeBoxTask [occurrence.teamMembers.contains(ID)] {
+		// I'm part of this team - update my state immediately
+		if (this.myClaimedBox === null || this.myClaimedBox.equals(occurrence.boxPosition)) {
+			this.myClaimedBox = occurrence.boxPosition
+			this.myTargetExit = occurrence.exitPosition
+			// CRITICAL FIX: Convert List to LinkedList to avoid type mismatch
+			this.plannedBoxPath.clear
+			this.plannedBoxPath.addAll(occurrence.plannedPath)
+			this.currentPathStep = 0
+			this.pathPlanned = !this.plannedBoxPath.isEmpty
+			
+			// Log path planning result
+			if (this.plannedBoxPath.isEmpty) {
+				System.out.println("[Agent " + getAgentName + "] CollaborativeBoxTask: WARNING - Received empty planned path for box at " + occurrence.boxPosition)
+			} else {
+				System.out.println("[Agent " + getAgentName + "] CollaborativeBoxTask: Received planned path with " + this.plannedBoxPath.size + " steps: " + this.plannedBoxPath)
+			}
+			
+			this.teamMembers.clear
+			this.teamMembers.addAll(occurrence.teamMembers)
+			
+			// Determine my role
+			var myIndex = occurrence.teamMembers.indexOf(ID)
+			this.myTaskRole = if (myIndex == 0) "PUSHER" else "HELPER"
+			
+			// CRITICAL FIX: Mark box as claimed so other agents know it's taken
+			this.claimedBoxes.add(occurrence.boxPosition)
+			this.assignedExits.add(occurrence.exitPosition)
+			
+			// Immediately transition to ALIGNMENT and start executing
+			this.agentBehaviorPhase = "ALIGNMENT"
+			
+			System.out.println("[Agent " + getAgentName + "] Joined collaborative task for box at " + occurrence.boxPosition + " as " + this.myTaskRole + " - starting execution immediately")
+		}
+	}
+	
+	/** Handle CollaborativeBoxTask when I'm NOT part of the team - mark box as claimed. */
+	on CollaborativeBoxTask [!occurrence.teamMembers.contains(ID)] {
+		// Another team is working on this box - mark it as claimed
+		if (!this.claimedBoxes.contains(occurrence.boxPosition)) {
+			this.claimedBoxes.add(occurrence.boxPosition)
+			this.assignedExits.add(occurrence.exitPosition)
+			System.out.println("[Agent " + getAgentName + "] CollaborativeBoxTask: Box at " + occurrence.boxPosition + " is being worked on by team " + occurrence.teamMembers + ", marking as claimed")
+		}
+	}
+	
+	/** Handle helper ready signal (informational only - no waiting). */
+	on ReadyToHelp [this.myTaskRole === "PUSHER" && this.teamMembers.contains(occurrence.helperId)] {
+		// Just log - don't wait, execute immediately
+		this.helperReadyAgents.add(occurrence.helperId)
+		System.out.println("[Agent " + getAgentName + "] PUSHER: Helper " + occurrence.helperId + " is ready (informational)")
+	}
+	
+	on Perception {
+		synchronized(this) {
+			// Reset action flag if this is a new step (different time)
+			if (occurrence.time != this.lastPerceptionTime) {
+				this.actionEmittedThisStep = false
+				this.lastPerceptionTime = occurrence.time
+			}
+			
+			// Prevent multiple actions per perception event
+			if (this.actionEmittedThisStep) {
+				System.out.println("[Agent " + getAgentName + "] Skipping decideAction - already emitted action this step")
+				return
+			}
+			
+			System.out.println("[Agent " + getAgentName + "] Received Perception at time " + occurrence.time + ", position " + occurrence.position + ", objects: " + occurrence.objects.size)
+			this.currentTime = occurrence.time
+			this.myPosition = occurrence.position
+			
+			// Update global knowledge: track box movements
+			updateGlobalKnowledge(occurrence.objects)
+			
+			// Broadcast position periodically for blocking detection (every 3 steps)
+			this.positionBroadcastCounter++
+			if (this.positionBroadcastCounter >= 3) {
+				emit(new AgentPositionBroadcast(ID, this.myPosition, this.myClaimedBox, this.agentBehaviorPhase))
+				this.positionBroadcastCounter = 0
+			}
+			
+			// Check if we're at an exit
+			checkExitReached
+			
+			// Make autonomous decision (will set actionEmittedThisStep = true)
+			decideAction(occurrence.objects)
+		}
+	}
+	
+	/** Check if agent has reached an exit. */
+	def checkExitReached {
+		// Check if current position has an exit
+		// This will be verified by the environment, but we can announce it
+		// The environment will check if we're actually at an exit
+	}
+	
+	/** Update global knowledge based on current perceptions.
+	 * Tracks box movements to maintain accurate global knowledge.
+	 * Always maintains physical reality in allBoxPositions, regardless of completion state.
+	 */
+	def updateGlobalKnowledge(perceivedObjects : List<sokobanObject>) {
+		// Update box positions in global knowledge (physical existence tracking)
+		var currentBoxPositions = new HashSet<Point2i>
+		for (obj : perceivedObjects) {
+			if (obj instanceof BoxObject) {
+				currentBoxPositions.add(obj.position)
+				
+				// Always add box to allBoxPositions if not present (physical existence)
+				// Completion state does not affect physical existence
+				if (!this.allBoxPositions.contains(obj.position)) {
+					// Box moved to new position - update global knowledge
+					// Remove old positions that are close to the new position (within 2 cells)
+					var oldPositions = new ArrayList<Point2i>
+					for (oldPos : this.allBoxPositions) {
+						// Check if this old position is close to new position (box moved)
+						// Use Manhattan distance calculation inline
+						if (oldPos !== null && obj.position !== null) {
+							var dx = oldPos.x - obj.position.x
+							var dy = oldPos.y - obj.position.y
+							var distance = Math::abs(dx) + Math::abs(dy)
+							if (distance <= 2) {  // Box moved within 2 cells
+								oldPositions.add(oldPos)
+							}
+						}
+					}
+					// Remove old positions and add new position
+					for (oldPos : oldPositions) {
+						this.allBoxPositions.remove(oldPos)
+					}
+					this.allBoxPositions.add(obj.position)
+					System.out.println("[Agent " + getAgentName + "] Updated global knowledge: box moved to " + obj.position)
+				}
+				
+				// If box is on exit, mark it as completed (but keep in allBoxPositions)
+				if ((obj as BoxObject).isOnTarget) {
+					if (!this.completedBoxes.contains(obj.position)) {
+						this.completedBoxes.add(obj.position)
+						System.out.println("[Agent " + getAgentName + "] Box at " + obj.position + " is on exit, marked as completed")
+					}
+				}
+			}
+		}
+	}
+	
+	/** Make autonomous decision based on perception - DECENTRALIZED BEHAVIOR. */
+	def decideAction(perceivedObjects : List<sokobanObject>) {
+		// Prevent multiple actions per step
+		if (this.actionEmittedThisStep) {
+			return
+		}
+		
+		// Wait for initial knowledge if not received yet
+		// BUT: Don't wait if boxes are just temporarily not in perception
+		// Only wait if InitialKnowledge was never received (indicated by both sets being empty AND no boxes ever seen)
+		if ((this.allBoxPositions.isEmpty && this.allExitPositions.isEmpty) && this.lastPerceptionTime == 0) {
+			System.out.println("[Agent " + getAgentName + "] Waiting for InitialKnowledge...")
+			return
+		}
+		
+		System.out.println("[Agent " + getAgentName + "] decideAction: phase=" + this.agentBehaviorPhase + ", claimedBox=" + this.myClaimedBox + ", activeBoxTask=" + this.activeBoxTask + ", position=" + this.myPosition + ", targetExit=" + this.myTargetExit)
+		
+		// PHASE 0: PLANNING - Evaluate all boxes, emit proposals, and form teams
+		if (this.agentBehaviorPhase == "PLANNING") {
+			System.out.println("[Agent " + getAgentName + "] decideAction: Entering PLANNING phase handler")
+			handlePlanning(perceivedObjects)
+			return
+		}
+		
+		// PHASE 1: ALIGNMENT - Move to push position behind the assigned box
+		if (this.agentBehaviorPhase == "ALIGNMENT") {
+			System.out.println("[Agent " + getAgentName + "] decideAction: Entering ALIGNMENT phase handler")
+			handleAlignment(perceivedObjects)
+			return
+		}
+		
+		// PHASE 2: PUSH_EXECUTION - Push the box toward the exit
+		if (this.agentBehaviorPhase == "PUSH_EXECUTION") {
+			System.out.println("[Agent " + getAgentName + "] decideAction: Entering PUSH_EXECUTION phase handler")
+			handlePushExecution(perceivedObjects)
+			return
+		}
+		
+		// PHASE 3: TASK_COMPLETION - Box reached exit, release and return to planning
+		if (this.agentBehaviorPhase == "TASK_COMPLETION") {
+			handleTaskCompletion(perceivedObjects)
+			return
+		}
+	}
+	
+	/** PHASE 0: PLANNING - Evaluate all boxes and emit path proposals. */
+	def handlePlanning(perceivedObjects : List<sokobanObject>) {
+		// Guard: If we're already in COORDINATION or other phases, don't execute planning
+		if (this.agentBehaviorPhase != "PLANNING") {
+			System.out.println("[Agent " + getAgentName + "] handlePlanning: Skipping - phase is " + this.agentBehaviorPhase + " (not PLANNING)")
+			return
+		}
+		
+		// If proposals haven't been emitted yet, evaluate and emit them
+		if (!this.proposalsEmitted) {
+			// Clear previous proposals (start fresh)
+			this.myProposals.clear
+			this.pathProposals.clear
+			this.negotiationTimeout = 0
+			this.coordinationActive = true
+			this.proposalsEmitted = true
+			
+			// Count available boxes
+			var availableBoxes = 0
+			for (boxPos : this.allBoxPositions) {
+				if (!this.completedBoxes.contains(boxPos) && !this.claimedBoxes.contains(boxPos)) {
+					availableBoxes++
+				}
+			}
+			System.out.println("[Agent " + getAgentName + "] PLANNING: Starting coordination cycle - evaluating " + availableBoxes + " available box(es)...")
+			
+			// FIX 1: Verify and update box positions against perceptions before planning
+			// This prevents planning with stale positions
+			syncBoxPositionsWithPerceptions(perceivedObjects)
+			
+			// Evaluate all unclaimed, uncompleted boxes
+			for (boxPos : this.allBoxPositions) {
+				// Skip if box is completed
+				if (this.completedBoxes.contains(boxPos)) {
+					continue
+				}
+			
+				// Skip if box is claimed by another agent
+				if (this.claimedBoxes.contains(boxPos)) {
+					continue
+				}
+				
+				// Skip if box is already on an exit
+				var boxObj = findObjectAt(perceivedObjects, boxPos)
+				if (boxObj instanceof BoxObject && (boxObj as BoxObject).isOnTarget) {
+					continue
+				}
+				
+				// Skip if box is next to outer border
+				if (isNextToOuterBorder(boxPos)) {
+					continue
+				}
+				
+				// FIX 3: Verify box position exists in perceptions or use fallback
+				// If box is not in perceptions, try to find it nearby or use allBoxPositions as fallback
+				var verifiedBoxPos = boxPos
+				var boxObjInPerception = findObjectAt(perceivedObjects, boxPos)
+				if (boxObjInPerception === null || !(boxObjInPerception instanceof BoxObject)) {
+					// Box not in perceptions - try to find it nearby
+					var nearbyBox = findCurrentBoxPosition(boxPos, perceivedObjects)
+					if (nearbyBox !== null) {
+						verifiedBoxPos = nearbyBox
+						System.out.println("[Agent " + getAgentName + "] PLANNING: Box at " + boxPos + " not in perceptions, using nearby position " + nearbyBox)
+					} else {
+						// Box not visible - use allBoxPositions position as fallback
+						// This allows planning even if box is outside perception range
+						System.out.println("[Agent " + getAgentName + "] PLANNING: Box at " + boxPos + " not in perceptions, using global knowledge position")
+						// Continue with boxPos from allBoxPositions
+					}
+				}
+				
+				// Find nearest exit for this box (use verified position)
+				var exitPos = findNearestExit(verifiedBoxPos)
+				if (exitPos === null) {
+					continue
+				}
+				
+				// Plan path from box to exit (use verified position)
+				var path = planBoxPath(verifiedBoxPos, exitPos, perceivedObjects)
+				if (path.isEmpty) {
+					// No path found, skip this box
+					continue
+				}
+				
+				// Calculate efficiency score (use verified position)
+				var pathLength = path.size
+				var alignmentCost = calculateDistance(this.myPosition, verifiedBoxPos)
+				var estimatedSteps = alignmentCost + pathLength
+				var efficiencyScore = calculateEfficiencyScore(this.myPosition, verifiedBoxPos, exitPos, pathLength)
+				
+				// Create proposal (use verified position)
+				var proposal = new PathProposal(ID, verifiedBoxPos, exitPos, pathLength, efficiencyScore, estimatedSteps)
+				this.myProposals.put(verifiedBoxPos, proposal)
+				
+				// Emit proposal to other agents
+				emit(proposal)
+				System.out.println("[Agent " + getAgentName + "] PLANNING: Proposed box at " + boxPos + " -> exit " + exitPos + " (score: " + efficiencyScore + ", steps: " + estimatedSteps + ")")
+			}
+			
+			// After emitting, wait one step for proposals to arrive
+			this.negotiationTimeout++
+			System.out.println("[Agent " + getAgentName + "] PLANNING: Emitted " + this.myProposals.size + " proposals, waiting for responses (timeout: " + this.negotiationTimeout + "/2)")
+			return
+		}
+		
+		// Proposals already emitted, increment timeout and check if ready to process
+		this.negotiationTimeout++
+		if (this.negotiationTimeout < 2) {
+			// Wait one more step for proposals to arrive
+			System.out.println("[Agent " + getAgentName + "] PLANNING: Waiting for proposals (timeout: " + this.negotiationTimeout + "/2, received: " + this.pathProposals.size + ")")
+			return
+		}
+		
+		// Process proposals immediately
+		System.out.println("[Agent " + getAgentName + "] PLANNING: Processing proposals (my proposals: " + this.myProposals.size + ", received: " + this.pathProposals.size + ")")
+		
+		// Group proposals by box position
+		var proposalsByBox = <Point2i, List<PathProposal>>newHashMap
+		
+		// Add my proposals
+		for (boxPos : this.myProposals.keySet) {
+			var myProposal = this.myProposals.get(boxPos)
+			var proposals = <PathProposal>newArrayList
+			proposals.add(myProposal)
+			proposalsByBox.put(boxPos, proposals)
+		}
+		
+		// Add other agents' proposals
+		for (proposal : this.pathProposals) {
+			var boxPos = proposal.boxPosition
+			if (!proposalsByBox.containsKey(boxPos)) {
+				proposalsByBox.put(boxPos, <PathProposal>newArrayList)
+			}
+			proposalsByBox.get(boxPos).add(proposal)
+		}
+		
+		// Find best proposal for each box (with tie-breaking: HIGHER ID wins)
+		var bestProposalsByBox = <Point2i, PathProposal>newHashMap
+		for (boxPos : proposalsByBox.keySet) {
+			var proposals = proposalsByBox.get(boxPos)
+			if (proposals.isEmpty) {
+				continue
+			}
+			
+			// Find best proposal (lower score is better, but HIGHER ID wins on tie)
+			var bestProposal : PathProposal = null
+			for (proposal : proposals) {
+				if (bestProposal === null) {
+					bestProposal = proposal
+				} else if (proposal.efficiencyScore < bestProposal.efficiencyScore) {
+					bestProposal = proposal
+				} else if (proposal.efficiencyScore == bestProposal.efficiencyScore) {
+					// Tie-breaking: HIGHER ID wins (opposite of before)
+					if (proposal.agentId.compareTo(bestProposal.agentId) > 0) {
+						bestProposal = proposal
+					}
+				}
+			}
+			
+			if (bestProposal !== null) {
+				bestProposalsByBox.put(boxPos, bestProposal)
+			}
+		}
+		
+		// COLLABORATIVE ASSIGNMENT APPROACH: Assign 2 agents per box (one pushes, one helps)
+		var boxAssignments = <Point2i, List<UUID>>newHashMap  // box -> list of agent IDs
+		var agentAssignments = <UUID, Point2i>newHashMap  // agentId -> box they're assigned to
+		var usedExits = <Point2i>newHashSet  // Track exits already assigned
+		
+		// CRITICAL FIX: Check which boxes are already assigned (from CollaborativeBoxTask events)
+		// Skip boxes that are already claimed or being worked on
+		var availableBoxes = <Point2i>newHashSet
+		for (boxPos : bestProposalsByBox.keySet) {
+			// Skip if box is already claimed
+			if (this.claimedBoxes.contains(boxPos)) {
+				System.out.println("[Agent " + getAgentName + "] PLANNING: Skipping box at " + boxPos + " - already claimed")
+				continue
+			}
+			// Skip if box is completed
+			if (this.completedBoxes.contains(boxPos)) {
+				continue
+			}
+			availableBoxes.add(boxPos)
+		}
+		
+		// Sort boxes by priority (best efficiency score first)
+		var sortedBoxes = availableBoxes.sortBy [boxPos |
+			var proposal = bestProposalsByBox.get(boxPos)
+			proposal.efficiencyScore  // Lower score = higher priority
+		]
+		
+		// Assign 2 agents per box (collaborative approach)
+		for (boxPos : sortedBoxes) {
+			if (boxAssignments.containsKey(boxPos)) {
+				continue  // Already assigned
+			}
+			
+			var proposals = proposalsByBox.get(boxPos)
+			if (proposals === null || proposals.isEmpty) {
+				continue
+			}
+			
+			// Find best 2 agents for this box (best proposals)
+			var selectedAgents = <UUID>newArrayList
+			var sortedProposals = proposals.sortBy [it.efficiencyScore]
+			
+			for (proposal : sortedProposals) {
+				if (selectedAgents.size >= 2) {
+					break
+				}
+				// Only assign if agent doesn't already have a box
+				if (!agentAssignments.containsKey(proposal.agentId)) {
+					selectedAgents.add(proposal.agentId)
+					agentAssignments.put(proposal.agentId, boxPos)
+				}
+			}
+			
+			if (!selectedAgents.isEmpty) {
+				boxAssignments.put(boxPos, selectedAgents)
+				var bestProposal = bestProposalsByBox.get(boxPos)
+				usedExits.add(bestProposal.exitPosition)
+				if (selectedAgents.size < 2) {
+					System.out.println("[Agent " + getAgentName + "] PLANNING: Only " + selectedAgents.size + " agent(s) assigned to box at " + boxPos + " (wanted 2)")
+				} else {
+					System.out.println("[Agent " + getAgentName + "] PLANNING: Successfully assigned 2 agents to box at " + boxPos + ": " + selectedAgents)
+				}
+			}
+		}
+		
+		// Check if I got assigned to a box
+		if (agentAssignments.containsKey(ID)) {
+			var myAssignedBox = agentAssignments.get(ID)
+			var teamMembersList = boxAssignments.get(myAssignedBox)
+			var bestProposal = bestProposalsByBox.get(myAssignedBox)
+			
+			// Determine my role: first agent is "PUSHER", second is "HELPER"
+			var myIndex = teamMembersList.indexOf(ID)
+			var myRole = if (myIndex == 0) "PUSHER" else "HELPER"
+			
+			// Plan the path for my assigned box
+			var plannedPath = planBoxPath(myAssignedBox, bestProposal.exitPosition, perceivedObjects)
+			
+			// Log path planning result
+			if (plannedPath.isEmpty) {
+				System.out.println("[Agent " + getAgentName + "] PLANNING: WARNING - Planned path is empty for box at " + myAssignedBox + " -> exit " + bestProposal.exitPosition)
+			} else {
+				System.out.println("[Agent " + getAgentName + "] PLANNING: Planned path has " + plannedPath.size + " steps from " + myAssignedBox + " to " + bestProposal.exitPosition)
+				System.out.println("[Agent " + getAgentName + "] PLANNING: Path: " + plannedPath)
+			}
+			
+			// Claim the box and start working
+			this.myClaimedBox = myAssignedBox
+			this.myTargetExit = bestProposal.exitPosition
+			this.plannedBoxPath = plannedPath
+			this.currentPathStep = 0
+			this.pathPlanned = !this.plannedBoxPath.isEmpty
+			this.claimedBoxes.add(myAssignedBox)
+			this.assignedExits.add(this.myTargetExit)
+			
+			// Store team information for coordination
+			this.teamMembers.clear
+			this.teamMembers.addAll(teamMembersList)
+			this.myTaskRole = myRole
+			
+			// CRITICAL FIX: Create a copy of the path to avoid reference issues
+			var pathCopy = <Point2i>newLinkedList
+			pathCopy.addAll(this.plannedBoxPath)
+			System.out.println("[Agent " + getAgentName + "] PLANNING: Creating path copy with " + pathCopy.size + " steps: " + pathCopy)
+			
+			// Emit assignment event so other agents know
+			emit(new BoxAssignment(myAssignedBox, ID, this.myTargetExit, pathCopy))
+			
+			// Emit collaborative task event with path copy
+			emit(new CollaborativeBoxTask(myAssignedBox, teamMembersList, bestProposal.exitPosition, pathCopy))
+			System.out.println("[Agent " + getAgentName + "] PLANNING: Emitted CollaborativeBoxTask with path of " + pathCopy.size + " steps")
+			
+			// Emit path visualization event for debugging
+			if (!this.plannedBoxPath.isEmpty) {
+				emit(new PathVisualization(myAssignedBox, this.myTargetExit, this.plannedBoxPath, ID))
+			}
+			
+			System.out.println("[Agent " + getAgentName + "] PLANNING: Assigned to box at " + myAssignedBox + " as " + myRole + " (team: " + teamMembersList.size + " agents)")
+			
+			// Transition to ALIGNMENT phase and start executing immediately
+			this.agentBehaviorPhase = "ALIGNMENT"
+			this.proposalsEmitted = false
+			this.alignmentSteps = 0
+			this.lastAlignmentPosition = null
+			this.recentPositions.clear
+			System.out.println("[Agent " + getAgentName + "] Transitioned to ALIGNMENT phase - will start pushing once in push position")
+			
+			// Emit action to move toward box immediately
+			if (!this.actionEmittedThisStep) {
+				var direction = calculateDirectionToTarget(myAssignedBox, perceivedObjects)
+				if (direction !== null) {
+					emitAction(direction)
+					System.out.println("[Agent " + getAgentName + "] PLANNING: Emitting action after transitioning to ALIGNMENT")
+				} else {
+					var greedyDir = calculateDirectionToTargetGreedy(myAssignedBox)
+					if (greedyDir !== null) {
+						emitAction(greedyDir)
+						System.out.println("[Agent " + getAgentName + "] PLANNING: Emitting greedy action after transitioning to ALIGNMENT")
+					}
+				}
+			}
+			return
+		} else {
+			// I didn't get assigned a box, continue planning/coordinating for remaining boxes
+			System.out.println("[Agent " + getAgentName + "] PLANNING: No box assigned to me, continuing coordination (assigned boxes: " + agentAssignments.size + ")")
+			this.proposalsEmitted = false
+			return
+		}
+	}
+	
+	/** PHASE 1: BOX_SELECTION - Select nearest unclaimed box. */
+	def handleBoxSelection(perceivedObjects : List<sokobanObject>) {
+		if (this.myClaimedBox !== null) {
+			// Already have a claimed box, move to alignment
+			this.agentBehaviorPhase = "ALIGNMENT"
+			return
+		}
+		
+		// Find nearest unclaimed box that is not on an exit
+		var nearestBox : Point2i = null
+		var minDistance = Integer::MAX_VALUE
+		
+		for (boxPos : this.allBoxPositions) {
+			// Skip if box is completed (on exit)
+			if (this.completedBoxes.contains(boxPos)) {
+				continue
+			}
+			
+			// Skip if box is claimed by another agent
+			if (this.claimedBoxes.contains(boxPos)) {
+				continue
+			}
+			
+			// Skip if box was recently released by this agent (cooldown period)
+			var releaseTime = this.recentlyReleasedBoxes.get(boxPos)
+			if (releaseTime !== null) {
+				var stepsSinceRelease = this.lastPerceptionTime - releaseTime
+				if (stepsSinceRelease < this.releaseCooldownSteps) {
+					continue  // Still in cooldown period
+				} else {
+					// Cooldown expired, remove from tracking
+					this.recentlyReleasedBoxes.remove(boxPos)
+				}
+			}
+			
+			// Check if box is already on an exit (in perceptions)
+			var boxObj = findObjectAt(perceivedObjects, boxPos)
+			if (boxObj instanceof BoxObject && (boxObj as BoxObject).isOnTarget) {
+				continue  // Box already on exit, skip it
+			}
+			
+			// Check if box is already next to outer border (avoid selecting it)
+			if (isNextToOuterBorder(boxPos)) {
+				continue  // Skip boxes too close to outer border
+			}
+			
+			// Calculate distance to this box
+			var distance = calculateDistance(this.myPosition, boxPos)
+			if (distance < minDistance) {
+				minDistance = distance
+				nearestBox = boxPos
+			}
+		}
+		
+		var boxAlreadyBeingPushed = false
+		if (nearestBox !== null) {
+			// ENHANCED CONFLICT CHECK: Check if another agent is actively working on this box
+			for (otherAgentId : this.otherAgentPhases.keySet) {
+				var otherPhase = this.otherAgentPhases.get(otherAgentId)
+				var otherTargetBox = this.otherAgentTargets.get(otherAgentId)
+				// Check if another agent is in PUSH_EXECUTION or ALIGNMENT for this box
+				if ((otherPhase === "PUSH_EXECUTION" || otherPhase === "ALIGNMENT") && otherTargetBox !== null) {
+					var distance = calculateDistance(otherTargetBox, nearestBox)
+					if (distance == 0) {
+						boxAlreadyBeingPushed = true
+						System.out.println("[Agent " + getAgentName + "] Box at " + nearestBox + " is being worked on by agent " + otherAgentId + " (phase: " + otherPhase + "), skipping")
+						break
+					}
+				}
+			}
+			
+			if (!boxAlreadyBeingPushed) {
+				// Claim this box locally (add to claimedBoxes immediately to prevent race condition)
+				this.myClaimedBox = nearestBox
+				this.claimedBoxes.add(nearestBox)  // Mark as claimed by us immediately
+				// Find nearest exit for this box
+				this.myTargetExit = findNearestExit(nearestBox)
+				
+				// PLAN PATH: Find efficient path from box to exit
+				this.plannedBoxPath = planBoxPath(nearestBox, this.myTargetExit, perceivedObjects)
+				this.currentPathStep = 0
+				this.pathPlanned = !this.plannedBoxPath.isEmpty
+				
+				if (this.pathPlanned) {
+					System.out.println("[Agent " + getAgentName + "] Planned path with " + this.plannedBoxPath.size + " steps from " + nearestBox + " to " + this.myTargetExit)
+				} else {
+					System.out.println("[Agent " + getAgentName + "] No path found from " + nearestBox + " to " + this.myTargetExit + ", using greedy approach")
+				}
+				
+				// Announce claim (decentralized coordination)
+				emit(new BoxClaimed(nearestBox, ID))
+				System.out.println("[Agent " + getAgentName + "] Selected box at " + nearestBox + ", target exit: " + this.myTargetExit)
+				// Move to alignment phase
+				this.agentBehaviorPhase = "ALIGNMENT"
+			} else {
+				// Box is being pushed, try to find another box
+				System.out.println("[Agent " + getAgentName + "] Skipping box at " + nearestBox + " (being pushed), continuing search")
+				// Continue to else block to handle no boxes available
+			}
+		}
+		
+		if (nearestBox === null || boxAlreadyBeingPushed) {
+			// No unclaimed boxes available - all boxes are claimed or on exits
+			System.out.println("[Agent " + getAgentName + "] No unclaimed boxes available")
+			// Idle or navigate toward an exit
+			if (!this.allExitPositions.isEmpty) {
+				var nearestExit = findNearestExit(this.myPosition)
+				if (nearestExit !== null) {
+					var direction = calculateDirectionToTarget(nearestExit, perceivedObjects)
+					if (direction !== null) {
+						emitAction(direction)
+					}
+				}
+			}
+		}
+	}
+	
+	/** PHASE 2: ALIGNMENT - Navigate to push position behind box. */
+	def handleAlignment(perceivedObjects : List<sokobanObject>) {
+		System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Starting alignment phase (claimedBox=" + this.myClaimedBox + ", targetExit=" + this.myTargetExit + ", position=" + this.myPosition + ")")
+		
+		if (this.myClaimedBox === null || this.myTargetExit === null) {
+			// Lost claim or target, go back to selection
+			System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Lost claim or target, returning to BOX_SELECTION")
+			this.agentBehaviorPhase = "BOX_SELECTION"
+			return
+		}
+		
+		// COMPLETION GUARD: Check if box is already completed before continuing
+		var boxIsCompleted = false
+		
+		// Check 1: Is box in completedBoxes set?
+		if (this.completedBoxes.contains(this.myClaimedBox)) {
+			boxIsCompleted = true
+			System.out.println("[Agent " + getAgentName + "] Box at " + this.myClaimedBox + " is in completedBoxes, aborting alignment")
+		}
+		
+		// Check 2: Is box in perceptions and marked as onTarget?
+		if (!boxIsCompleted) {
+			var boxObj = findObjectAt(perceivedObjects, this.myClaimedBox)
+			if (boxObj instanceof BoxObject && (boxObj as BoxObject).isOnTarget) {
+				boxIsCompleted = true
+				System.out.println("[Agent " + getAgentName + "] Box at " + this.myClaimedBox + " is onTarget in perceptions, aborting alignment")
+			}
+		}
+		
+		// Check 3: Is box position in allExitPositions?
+		if (!boxIsCompleted && this.allExitPositions.contains(this.myClaimedBox)) {
+			boxIsCompleted = true
+			System.out.println("[Agent " + getAgentName + "] Box at " + this.myClaimedBox + " is at exit position, aborting alignment")
+		}
+		
+		// If box is completed, release claim and return to selection
+		if (boxIsCompleted) {
+			System.out.println("[Agent " + getAgentName + "] Box is completed, releasing claim and returning to BOX_SELECTION")
+			this.claimedBoxes.remove(this.myClaimedBox)
+			this.myClaimedBox = null
+			this.myTargetExit = null
+			this.myPushPosition = null
+			this.lastBoxPosition = null
+			this.plannedBoxPath.clear
+			this.currentPathStep = 0
+			this.pathPlanned = false
+			cleanupTeamState
+			this.agentBehaviorPhase = "BOX_SELECTION"
+			return
+		}
+		
+		// Find current box position - use global knowledge if not in perceptions
+		var currentBoxPos = findCurrentBoxPosition(this.myClaimedBox, perceivedObjects)
+		System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Found box at " + currentBoxPos + " (claimed: " + this.myClaimedBox + ", in perceptions: " + (currentBoxPos !== null && currentBoxPos.equals(this.myClaimedBox)) + ")")
+		
+		// CONFLICT DETECTION: Check if another agent is actively working on this box
+		if (currentBoxPos !== null) {
+			for (otherAgentId : this.otherAgentPhases.keySet) {
+				var otherPhase = this.otherAgentPhases.get(otherAgentId)
+				var otherTargetBox = this.otherAgentTargets.get(otherAgentId)
+				
+				// If another agent is in PUSH_EXECUTION or ALIGNMENT and targeting same box position
+				if ((otherPhase === "PUSH_EXECUTION" || otherPhase === "ALIGNMENT") && otherTargetBox !== null) {
+					var distance = calculateDistance(otherTargetBox, currentBoxPos)
+					if (distance == 0) {  // Same box position
+						// Another agent is actively working on this box - release claim
+						System.out.println("[Agent " + getAgentName + "] Conflict detected in ALIGNMENT: agent " + otherAgentId + " is " + otherPhase + " for box at " + currentBoxPos + ", releasing claim")
+						this.claimedBoxes.remove(this.myClaimedBox)
+						this.myClaimedBox = null
+						this.myTargetExit = null
+						this.myPushPosition = null
+						this.lastBoxPosition = null
+						this.plannedBoxPath.clear
+						this.currentPathStep = 0
+						this.pathPlanned = false
+						cleanupTeamState
+						this.agentBehaviorPhase = "BOX_SELECTION"
+						return
+					}
+				}
+			}
+		}
+		
+		// If box not in perceptions, use global knowledge (box might be far away)
+		if (currentBoxPos === null) {
+			System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Box not found in perceptions, checking global knowledge...")
+			// Check if box is still in global knowledge
+			if (this.allBoxPositions.contains(this.myClaimedBox)) {
+				// Box exists in global knowledge - use claimed position
+				currentBoxPos = this.myClaimedBox
+				System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Using global knowledge position: " + currentBoxPos + " (distance from agent: " + calculateDistance(this.myPosition, currentBoxPos) + ")")
+			} else {
+				// Box not in global knowledge - might be at exit or moved
+				System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Box not in global knowledge, checking if at exit...")
+				var boxAtExit = checkBoxAtExit(perceivedObjects)
+				if (boxAtExit) {
+					// Box reached exit
+					System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Box is at exit, transitioning to TASK_COMPLETION")
+					this.agentBehaviorPhase = "TASK_COMPLETION"
+					return
+				}
+				// Box not found anywhere - release claim
+				System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Box not found in perceptions or global knowledge, releasing claim")
+				if (this.myClaimedBox !== null) {
+					this.claimedBoxes.remove(this.myClaimedBox)
+				}
+				this.myClaimedBox = null
+				this.myTargetExit = null
+				this.plannedBoxPath.clear
+				this.currentPathStep = 0
+				this.pathPlanned = false
+				this.agentBehaviorPhase = "PLANNING"
+				this.proposalsEmitted = false
+				return
+			}
+		}
+		
+		// Update claimed box position if it moved
+		if (currentBoxPos.x != this.myClaimedBox.x || currentBoxPos.y != this.myClaimedBox.y) {
+			var oldClaimedPos = this.myClaimedBox
+			this.myClaimedBox = currentBoxPos
+			// Update global knowledge
+			this.allBoxPositions.remove(new Point2i(oldClaimedPos.x, oldClaimedPos.y))
+			this.allBoxPositions.add(currentBoxPos)
+			// Update claimedBoxes: remove old position, add new position
+			if (this.claimedBoxes.contains(oldClaimedPos)) {
+				this.claimedBoxes.remove(oldClaimedPos)
+			}
+			if (!this.claimedBoxes.contains(currentBoxPos)) {
+				this.claimedBoxes.add(currentBoxPos)
+			}
+			System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Box moved from " + oldClaimedPos + " to " + currentBoxPos + ", updated claimedBoxes")
+			
+			// Recalculate path from new box position to exit
+			if (this.myTargetExit !== null) {
+				var newPath = planBoxPath(currentBoxPos, this.myTargetExit, perceivedObjects)
+				if (!newPath.isEmpty) {
+					this.plannedBoxPath = newPath
+					this.currentPathStep = 0
+					this.pathPlanned = true
+					System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Recalculated path from new box position with " + newPath.size + " steps")
+				} else {
+					this.pathPlanned = false
+					this.plannedBoxPath.clear
+					this.currentPathStep = 0
+					System.out.println("[Agent " + getAgentName + "] ALIGNMENT: WARNING - No path found from new box position " + currentBoxPos)
+				}
+			}
+		}
+		
+		// CONFLICT DETECTION: Check if another agent is already working on this box
+		if (currentBoxPos !== null) {
+			// Check if this box position is claimed by another agent (via BoxAssignment events)
+			// We check other agents' target boxes to see if they're working on the same box
+			for (otherAgentId : this.otherAgentTargets.keySet) {
+				if (!otherAgentId.equals(ID)) {
+					var otherTargetBox = this.otherAgentTargets.get(otherAgentId)
+					if (otherTargetBox !== null) {
+						// Check if other agent is targeting a box near our current box position
+						var distance = calculateDistance(otherTargetBox, currentBoxPos)
+						if (distance <= 1) {
+							// Another agent is working on the same box - release claim
+							System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Conflict detected - agent " + otherAgentId + " is working on box at " + currentBoxPos + " (their target: " + otherTargetBox + "), releasing claim")
+							this.claimedBoxes.remove(this.myClaimedBox)
+							this.myClaimedBox = null
+							this.myTargetExit = null
+							this.myPushPosition = null
+							this.plannedBoxPath.clear
+							this.currentPathStep = 0
+							this.pathPlanned = false
+							this.lastBoxPosition = null
+							this.alignmentSteps = 0
+							this.lastAlignmentPosition = null
+							this.recentPositions.clear
+							this.agentBehaviorPhase = "PLANNING"
+							this.proposalsEmitted = false
+							return
+						}
+					}
+				}
+			}
+		}
+		
+		// COLLABORATIVE ALIGNMENT: Helper has different alignment logic
+		if (this.teamMembers.size > 1 && this.myTaskRole === "HELPER") {
+			// HELPER: Move to help position (perpendicular to push direction)
+			var pushDir = calculatePushDirection(currentBoxPos, this.myTargetExit)
+			if (pushDir !== null) {
+				var helpPosition = calculateHelperPosition(currentBoxPos, pushDir, perceivedObjects)
+				if (helpPosition !== null) {
+					// CRITICAL FIX: Check if help position is blocked by another agent
+					var helpPosBlocked = false
+					for (otherAgentId : this.otherAgentPositions.keySet) {
+						var otherAgentPos = this.otherAgentPositions.get(otherAgentId)
+						if (otherAgentPos !== null && otherAgentPos.x == helpPosition.x && otherAgentPos.y == helpPosition.y) {
+							helpPosBlocked = true
+							System.out.println("[Agent " + getAgentName + "] HELPER: Help position " + helpPosition + " is blocked by agent " + otherAgentId + ", finding alternative...")
+							// Try alternative helper position (other perpendicular direction)
+							var altHelpPos = calculateAlternativeHelperPosition(currentBoxPos, pushDir, helpPosition, perceivedObjects)
+							if (altHelpPos !== null) {
+								helpPosition = altHelpPos
+								helpPosBlocked = false
+								System.out.println("[Agent " + getAgentName + "] HELPER: Using alternative help position: " + altHelpPos)
+							}
+							break
+						}
+					}
+					
+					if (!helpPosBlocked) {
+						var distanceToHelp = calculateDistance(this.myPosition, helpPosition)
+						if (distanceToHelp > 0) {
+							// Move toward help position using BFS pathfinding
+							var direction = calculateDirectionToTarget(helpPosition, perceivedObjects)
+							if (direction !== null) {
+								var nextPos = calculateNextPosition(this.myPosition, direction)
+								// Verify next position is walkable
+								var nextPosObj = findObjectAt(perceivedObjects, nextPos)
+								if (nextPosObj === null || nextPosObj instanceof ExitObject) {
+									emitAction(direction)
+									System.out.println("[Agent " + getAgentName + "] HELPER: Moving toward help position " + helpPosition + " (distance=" + distanceToHelp + ", direction=" + direction + ")")
+									return
+								} else {
+									// Next position blocked - try alternative direction
+									var altDir = findAlternativeDirectionToTarget(helpPosition, direction, perceivedObjects)
+									if (altDir !== null) {
+										emitAction(altDir)
+										System.out.println("[Agent " + getAgentName + "] HELPER: Using alternative direction " + altDir + " to reach help position")
+										return
+									} else {
+										System.out.println("[Agent " + getAgentName + "] HELPER: Cannot reach help position, waiting...")
+										return
+									}
+								}
+							} else {
+								System.out.println("[Agent " + getAgentName + "] HELPER: Cannot find path to help position " + helpPosition)
+								// If close enough, try direct movement
+								if (distanceToHelp == 1) {
+									var dx = helpPosition.x - this.myPosition.x
+									var dy = helpPosition.y - this.myPosition.y
+									var directDir : Direction = null
+									if (dx > 0) directDir = Direction::EAST
+									else if (dx < 0) directDir = Direction::WEST
+									else if (dy > 0) directDir = Direction::SOUTH
+									else if (dy < 0) directDir = Direction::NORTH
+									if (directDir !== null) {
+										var nextPos = calculateNextPosition(this.myPosition, directDir)
+										var nextPosObj = findObjectAt(perceivedObjects, nextPos)
+										if (nextPosObj === null || nextPosObj instanceof ExitObject) {
+											emitAction(directDir)
+											System.out.println("[Agent " + getAgentName + "] HELPER: Using direct movement to help position: " + directDir)
+											return
+										}
+									}
+								}
+							}
+						} else {
+							// In help position - immediately start pushing
+							System.out.println("[Agent " + getAgentName + "] HELPER: In help position, transitioning to PUSH_EXECUTION")
+							this.agentBehaviorPhase = "PUSH_EXECUTION"
+							handlePushExecution(perceivedObjects)
+							return
+						}
+					} else {
+						// Help position blocked and no alternative - wait
+						System.out.println("[Agent " + getAgentName + "] HELPER: Help position blocked, waiting...")
+						return
+					}
+				} else {
+					System.out.println("[Agent " + getAgentName + "] HELPER: Cannot calculate help position, transitioning to PUSH_EXECUTION")
+					// No help position available - just push directly
+					this.agentBehaviorPhase = "PUSH_EXECUTION"
+					handlePushExecution(perceivedObjects)
+					return
+				}
+			}
+			// Fall through to normal alignment if helper position calculation fails
+		}
+		
+		// PUSHER alignment: Calculate push position (behind box, toward exit)
+		// CRITICAL FIX: Only recalculate if push position is null or box moved significantly
+		// This prevents oscillation when push position is blocked
+		var shouldRecalculate = (this.myPushPosition === null)
+		if (!shouldRecalculate && this.lastBoxPosition !== null) {
+			// Check if box moved significantly (more than 1 cell)
+			var boxMovement = calculateDistance(currentBoxPos, this.lastBoxPosition)
+			shouldRecalculate = (boxMovement > 1)
+		}
+		
+		if (shouldRecalculate) {
+			calculatePushPositionForBox(currentBoxPos, this.myTargetExit)
+			System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Calculated push position: " + this.myPushPosition + " (box at " + currentBoxPos + ", exit at " + this.myTargetExit + ")")
+		} else {
+			System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Using cached push position: " + this.myPushPosition + " (box at " + currentBoxPos + ")")
+		}
+		
+		// SPATIAL CONFLICT DETECTION: Check if push position is occupied by another agent
+		if (this.myPushPosition !== null) {
+			for (otherAgentId : this.otherAgentPositions.keySet) {
+				var otherAgentPos = this.otherAgentPositions.get(otherAgentId)
+				if (otherAgentPos !== null && otherAgentPos.x == this.myPushPosition.x && otherAgentPos.y == this.myPushPosition.y) {
+					// Push position is occupied by another agent - find alternative or wait
+					System.out.println("[Agent " + getAgentName + "] Push position " + this.myPushPosition + " is occupied by agent " + otherAgentId + ", finding alternative...")
+					// Try to find alternative push position
+					var altPushPos = findAdjacentPushPosition(currentBoxPos, this.myTargetExit, perceivedObjects)
+					if (altPushPos !== null && !altPushPos.equals(this.myPushPosition)) {
+						// Found alternative that's not blocked
+						var altBlocked = false
+						for (otherAgentId2 : this.otherAgentPositions.keySet) {
+							var otherAgentPos2 = this.otherAgentPositions.get(otherAgentId2)
+							if (otherAgentPos2 !== null && otherAgentPos2.x == altPushPos.x && otherAgentPos2.y == altPushPos.y) {
+								altBlocked = true
+								break
+							}
+						}
+						if (!altBlocked) {
+							this.myPushPosition = altPushPos
+							System.out.println("[Agent " + getAgentName + "] Using alternative push position: " + altPushPos)
+						} else {
+							// Alternative also blocked - wait
+							System.out.println("[Agent " + getAgentName + "] Alternative push position also blocked, waiting...")
+							return
+						}
+					} else {
+						// No alternative - wait for other agent to move
+						System.out.println("[Agent " + getAgentName + "] No alternative push position, waiting for agent " + otherAgentId + " to move...")
+						return
+					}
+				}
+			}
+		}
+		
+		if (this.myPushPosition === null) {
+			System.out.println("[Agent " + getAgentName + "] Cannot calculate push position for box at " + currentBoxPos + " toward exit " + this.myTargetExit)
+			
+			// Check if box is already on an exit before transitioning
+			var boxObj = findObjectAt(perceivedObjects, currentBoxPos)
+			var boxIsOnExit = false
+			
+			// First check: if box is in perceptions, check isOnTarget flag
+			if (boxObj instanceof BoxObject && (boxObj as BoxObject).isOnTarget) {
+				boxIsOnExit = true
+				System.out.println("[Agent " + getAgentName + "] Box at " + currentBoxPos + " is confirmed on exit (isOnTarget=true)")
+			} else if (this.allExitPositions.contains(currentBoxPos)) {
+				// Second check: if box position matches an exit position (box might not be in perceptions)
+				boxIsOnExit = true
+				System.out.println("[Agent " + getAgentName + "] Box at " + currentBoxPos + " is at exit position")
+			}
+			
+			if (boxIsOnExit) {
+				// Box is on exit - transition to TASK_COMPLETION for proper verification and cleanup
+				this.agentBehaviorPhase = "TASK_COMPLETION"
+				System.out.println("[Agent " + getAgentName + "] Box is on exit, transitioning to TASK_COMPLETION")
+				return
+			} else {
+				// Box is not on exit - cannot calculate push position for other reason (unreachable, blocked, etc.)
+				// Release claim and return to planning
+				System.out.println("[Agent " + getAgentName + "] Cannot reach box or push position blocked, releasing claim")
+				if (this.myClaimedBox !== null) {
+					this.claimedBoxes.remove(this.myClaimedBox)
+				}
+				this.myClaimedBox = null
+				this.myTargetExit = null
+				this.myPushPosition = null
+				this.plannedBoxPath.clear
+				this.currentPathStep = 0
+				this.pathPlanned = false
+				this.agentBehaviorPhase = "PLANNING"
+				this.proposalsEmitted = false
+				return
+			}
+		}
+		
+		// Check if push position is walkable (not blocked by wall)
+		// CRITICAL FIX: Only check once, don't recalculate if we already found an alternative
+		var pushPosObj = findObjectAt(perceivedObjects, this.myPushPosition)
+		if (pushPosObj instanceof WallObject && shouldRecalculate) {
+			// Push position is blocked by wall - try adjacent positions (only if we just calculated it)
+			System.out.println("[Agent " + getAgentName + "] Push position " + this.myPushPosition + " is blocked by wall, trying adjacent positions")
+			var altPushPos = findAdjacentPushPosition(currentBoxPos, this.myTargetExit, perceivedObjects)
+			if (altPushPos !== null) {
+				this.myPushPosition = altPushPos
+				System.out.println("[Agent " + getAgentName + "] Found alternative push position: " + altPushPos)
+			} else {
+				System.out.println("[Agent " + getAgentName + "] No alternative push position found, releasing claim")
+				if (this.myClaimedBox !== null) {
+					this.claimedBoxes.remove(this.myClaimedBox)
+				}
+				this.myClaimedBox = null
+				this.myTargetExit = null
+				this.myPushPosition = null
+				this.plannedBoxPath.clear
+				this.currentPathStep = 0
+				this.pathPlanned = false
+				this.agentBehaviorPhase = "PLANNING"
+				this.proposalsEmitted = false
+				return
+			}
+		}
+		
+		// Check if we're already in push position
+		var distanceToPushPos = calculateDistance(this.myPosition, this.myPushPosition)
+		System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Distance to push position: " + distanceToPushPos + " (current: " + this.myPosition + ", target: " + this.myPushPosition + ")")
+		
+		// STUCK DETECTION: Check if we're making progress or oscillating
+		this.alignmentSteps++
+		var isOscillating = false
+		if (this.lastAlignmentPosition !== null) {
+			var positionChanged = !this.myPosition.equals(this.lastAlignmentPosition)
+			
+			// Check for oscillation: if we're back at a previous position we visited recently
+			if (this.recentPositions.size >= 4) {
+				// Check if current position matches position from 2 steps ago (oscillation pattern)
+				var pos2StepsAgo = this.recentPositions.get(this.recentPositions.size - 2)
+				if (this.myPosition.equals(pos2StepsAgo)) {
+					isOscillating = true
+				}
+			}
+			
+			if ((!positionChanged || isOscillating) && this.alignmentSteps >= this.maxAlignmentSteps) {
+				// Stuck in same position or oscillating - release claim and return to planning
+				var reason = if (isOscillating) "oscillating" else "stuck at same position"
+				System.out.println("[Agent " + getAgentName + "] ALIGNMENT: " + reason + " for " + this.alignmentSteps + " steps, releasing claim and returning to PLANNING")
+				if (this.myClaimedBox !== null) {
+					this.claimedBoxes.remove(this.myClaimedBox)
+				}
+				this.myClaimedBox = null
+				this.myTargetExit = null
+				this.myPushPosition = null
+				this.plannedBoxPath.clear
+				this.currentPathStep = 0
+				this.pathPlanned = false
+				this.alignmentSteps = 0
+				this.lastAlignmentPosition = null
+				this.recentPositions.clear
+				this.agentBehaviorPhase = "PLANNING"
+				this.proposalsEmitted = false
+				return
+			}
+		}
+		
+		// Track recent positions for oscillation detection
+		if (this.recentPositions.size >= 4) {
+			this.recentPositions.remove(0) // Remove oldest
+		}
+		this.recentPositions.add(new Point2i(this.myPosition.x, this.myPosition.y))
+		this.lastAlignmentPosition = this.myPosition
+		
+		if (distanceToPushPos == 0) {
+			// In position - immediately start pushing (don't wait for next step)
+			this.agentBehaviorPhase = "PUSH_EXECUTION"
+			this.lastBoxPosition = currentBoxPos
+			this.alignmentSteps = 0  // Reset counter
+			this.lastAlignmentPosition = null
+			this.recentPositions.clear
+			System.out.println("[Agent " + getAgentName + "] ALIGNMENT: In push position, transitioning to PUSH_EXECUTION and starting push immediately")
+			// Immediately call handlePushExecution instead of returning
+			handlePushExecution(perceivedObjects)
+			return
+		}
+		
+		// Move toward push position using BFS pathfinding (avoids obstacles)
+		System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Calculating path to push position...")
+		var direction = calculateDirectionToTarget(this.myPushPosition, perceivedObjects)
+		if (direction !== null) {
+			var nextPos = calculateNextPosition(this.myPosition, direction)
+			// Verify next position is actually walkable
+			var nextPosObj = findObjectAt(perceivedObjects, nextPos)
+			if (nextPosObj === null || nextPosObj instanceof ExitObject) {
+				// Walkable - proceed
+				emitAction(direction)
+				System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Moving toward push position " + this.myPushPosition + " (distance=" + distanceToPushPos + ", direction=" + direction + ", nextPos=" + nextPos + ")")
+			} else {
+				// Next position blocked - try alternative path
+				System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Next position " + nextPos + " is blocked by " + (if (nextPosObj instanceof WallObject) "wall" else "object") + ", recalculating path")
+				// Try to find alternative direction
+				var altDirection = findAlternativeDirectionToTarget(this.myPushPosition, direction, perceivedObjects)
+				if (altDirection !== null) {
+					emitAction(altDirection)
+					System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Using alternative direction " + altDirection)
+				} else {
+					// No alternative - try direct movement if close
+					var dx = this.myPushPosition.x - this.myPosition.x
+					var dy = this.myPushPosition.y - this.myPosition.y
+					if (Math::abs(dx) + Math::abs(dy) == 1) {
+						// Adjacent - try direct move
+						var directDir : Direction = null
+						if (dx > 0) {
+							directDir = Direction::EAST
+						} else if (dx < 0) {
+							directDir = Direction::WEST
+						} else if (dy > 0) {
+							directDir = Direction::SOUTH
+						} else if (dy < 0) {
+							directDir = Direction::NORTH
+						}
+						if (directDir !== null) {
+							var directNextPos = calculateNextPosition(this.myPosition, directDir)
+							var directNextObj = findObjectAt(perceivedObjects, directNextPos)
+							if (directNextObj === null || directNextObj instanceof ExitObject) {
+								emitAction(directDir)
+								System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Using direct movement: " + directDir)
+							} else {
+								System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Direct movement also blocked, waiting...")
+							}
+						}
+					} else {
+						System.out.println("[Agent " + getAgentName + "] ALIGNMENT: No alternative path found, waiting...")
+					}
+				}
+			}
+		} else {
+			System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Cannot find path to push position " + this.myPushPosition + " from " + this.myPosition + ", trying direct movement...")
+			// Try direct movement if close
+			var dx = this.myPushPosition.x - this.myPosition.x
+			var dy = this.myPushPosition.y - this.myPosition.y
+			if (Math::abs(dx) + Math::abs(dy) == 1) {
+				// Adjacent - try direct move
+				var directDir : Direction = null
+				if (dx > 0) {
+					directDir = Direction::EAST
+				} else if (dx < 0) {
+					directDir = Direction::WEST
+				} else if (dy > 0) {
+					directDir = Direction::SOUTH
+				} else if (dy < 0) {
+					directDir = Direction::NORTH
+				}
+				if (directDir !== null) {
+					var directNextPos = calculateNextPosition(this.myPosition, directDir)
+					var directNextObj = findObjectAt(perceivedObjects, directNextPos)
+					if (directNextObj === null || directNextObj instanceof ExitObject) {
+						emitAction(directDir)
+						System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Using direct movement: " + directDir)
+					} else {
+						System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Direct movement blocked, waiting...")
+					}
+				}
+			} else {
+				System.out.println("[Agent " + getAgentName + "] ALIGNMENT: Push position not adjacent, cannot move directly")
+			}
+		}
+	}
+	
+	/** PHASE 3: PUSH_EXECUTION - Push box step-by-step toward exit. */
+	def handlePushExecution(perceivedObjects : List<sokobanObject>) {
+		System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Starting push execution (claimedBox=" + this.myClaimedBox + ", targetExit=" + this.myTargetExit + ", position=" + this.myPosition + ")")
+		
+		if (this.myClaimedBox === null || this.myTargetExit === null) {
+			// Lost claim or target, go back to selection
+			System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Lost claim or target, returning to BOX_SELECTION")
+			this.agentBehaviorPhase = "BOX_SELECTION"
+			return
+		}
+		
+		// COMPLETION GUARD: Check if box is already completed before pushing
+		var boxIsCompleted = false
+		
+		// Check 1: Is box in completedBoxes set?
+		if (this.completedBoxes.contains(this.myClaimedBox)) {
+			boxIsCompleted = true
+			System.out.println("[Agent " + getAgentName + "] Box at " + this.myClaimedBox + " is in completedBoxes, aborting push")
+		}
+		
+		// Check 2: Is box in perceptions and marked as onTarget?
+		if (!boxIsCompleted) {
+			var boxObj = findObjectAt(perceivedObjects, this.myClaimedBox)
+			if (boxObj instanceof BoxObject && (boxObj as BoxObject).isOnTarget) {
+				boxIsCompleted = true
+				System.out.println("[Agent " + getAgentName + "] Box at " + this.myClaimedBox + " is onTarget in perceptions, aborting push")
+			}
+		}
+		
+		// Check 3: Is box position in allExitPositions?
+		if (!boxIsCompleted && this.allExitPositions.contains(this.myClaimedBox)) {
+			boxIsCompleted = true
+			System.out.println("[Agent " + getAgentName + "] Box at " + this.myClaimedBox + " is at exit position, aborting push")
+		}
+		
+		// If box is completed, release claim and return to selection
+		if (boxIsCompleted) {
+			System.out.println("[Agent " + getAgentName + "] Box is completed, releasing claim and returning to BOX_SELECTION")
+			this.claimedBoxes.remove(this.myClaimedBox)
+			this.myClaimedBox = null
+			this.myTargetExit = null
+			this.myPushPosition = null
+			this.lastBoxPosition = null
+			this.pushStuckCounter = 0
+			this.pushFailureCount = 0
+			this.plannedBoxPath.clear
+			this.currentPathStep = 0
+			this.pathPlanned = false
+			cleanupTeamState
+			this.agentBehaviorPhase = "PLANNING"
+			this.proposalsEmitted = false
+			return
+		}
+		
+		// Find current box position
+		var currentBoxPos = findCurrentBoxPosition(this.myClaimedBox, perceivedObjects)
+		
+		// Update claimed box position if it moved (and update claimedBoxes)
+		if (currentBoxPos !== null && this.myClaimedBox !== null) {
+			if (currentBoxPos.x != this.myClaimedBox.x || currentBoxPos.y != this.myClaimedBox.y) {
+				var oldClaimedPos = this.myClaimedBox
+				this.myClaimedBox = currentBoxPos
+				// Update global knowledge
+				this.allBoxPositions.remove(new Point2i(oldClaimedPos.x, oldClaimedPos.y))
+				this.allBoxPositions.add(currentBoxPos)
+				// Update claimedBoxes: remove old position, add new position
+				if (this.claimedBoxes.contains(oldClaimedPos)) {
+					this.claimedBoxes.remove(oldClaimedPos)
+				}
+				if (!this.claimedBoxes.contains(currentBoxPos)) {
+					this.claimedBoxes.add(currentBoxPos)
+				}
+				System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Box moved from " + oldClaimedPos + " to " + currentBoxPos + ", updated claimedBoxes")
+				
+				// Recalculate path from new box position to exit
+				if (this.myTargetExit !== null) {
+					var newPath = planBoxPath(currentBoxPos, this.myTargetExit, perceivedObjects)
+					if (!newPath.isEmpty) {
+						// Find closest point in old path to new box position, or start from beginning
+						this.currentPathStep = 0
+						var minDist = Integer::MAX_VALUE
+						var closestStep = 0
+						for (var i = 0; i < this.plannedBoxPath.size; i++) {
+							var pathPoint = this.plannedBoxPath.get(i)
+							var dist = calculateDistance(currentBoxPos, pathPoint)
+							if (dist < minDist) {
+								minDist = dist
+								closestStep = i
+							}
+						}
+						// If box is close to a point in the path, continue from there
+						if (minDist <= 2 && closestStep < this.plannedBoxPath.size) {
+							this.currentPathStep = closestStep
+							System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Box moved, continuing from path step " + this.currentPathStep)
+						} else {
+							// Box moved significantly, use new path
+							this.plannedBoxPath = newPath
+							this.currentPathStep = 0
+							this.pathPlanned = true
+							System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Box moved significantly, recalculated path with " + newPath.size + " steps")
+						}
+					} else {
+						// No path found from new position
+						this.pathPlanned = false
+						this.plannedBoxPath.clear
+						this.currentPathStep = 0
+						System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: WARNING - No path found from new box position " + currentBoxPos)
+					}
+				}
+			}
+		}
+		
+		// CONFLICT DETECTION: Check if another agent is actively pushing this box
+		if (currentBoxPos !== null) {
+			for (otherAgentId : this.otherAgentPhases.keySet) {
+				var otherPhase = this.otherAgentPhases.get(otherAgentId)
+				var otherTargetBox = this.otherAgentTargets.get(otherAgentId)
+				
+				// If another agent is in PUSH_EXECUTION and targeting same box position
+				if (otherPhase === "PUSH_EXECUTION" && otherTargetBox !== null) {
+					var distance = calculateDistance(otherTargetBox, currentBoxPos)
+					if (distance == 0) {  // Same box position
+						// Another agent is actively pushing this box - release claim
+						System.out.println("[Agent " + getAgentName + "] Conflict detected: agent " + otherAgentId + " is pushing box at " + currentBoxPos + ", releasing claim")
+						this.claimedBoxes.remove(this.myClaimedBox)
+						this.myClaimedBox = null
+						this.myTargetExit = null
+						this.myPushPosition = null
+						this.lastBoxPosition = null
+						this.pushStuckCounter = 0
+						this.plannedBoxPath.clear
+						this.currentPathStep = 0
+						this.pathPlanned = false
+						cleanupTeamState
+						this.agentBehaviorPhase = "BOX_SELECTION"
+						return
+					}
+				}
+			}
+		}
+		if (currentBoxPos === null) {
+			// Box not found - check if it's at exit
+			var boxAtExit = checkBoxAtExit(perceivedObjects)
+			if (boxAtExit) {
+				this.agentBehaviorPhase = "TASK_COMPLETION"
+				return
+			}
+			// Box lost, release claim
+			if (this.myClaimedBox !== null) {
+				this.claimedBoxes.remove(this.myClaimedBox)
+			}
+			this.myClaimedBox = null
+			this.myTargetExit = null
+			this.plannedBoxPath.clear
+			this.currentPathStep = 0
+			this.pathPlanned = false
+			this.agentBehaviorPhase = "PLANNING"
+			this.proposalsEmitted = false
+			return
+		}
+		
+		// TIMEOUT MECHANISM: Check if box has made progress toward target
+		if (currentBoxPos !== null && this.lastBoxPosition !== null) {
+			var oldDist = calculateDistance(this.lastBoxPosition, this.myTargetExit)
+			var newDist = calculateDistance(currentBoxPos, this.myTargetExit)
+			if (newDist < oldDist) {
+				// Progress made - reset counter
+				this.pushStuckCounter = 0
+			} else if (newDist == oldDist && currentBoxPos.x == this.lastBoxPosition.x && currentBoxPos.y == this.lastBoxPosition.y) {
+				// Box hasn't moved at all - increment counter
+				this.pushStuckCounter++
+				if (this.pushStuckCounter >= this.maxStuckSteps) {
+					// Stuck for too long - release claim
+					System.out.println("[Agent " + getAgentName + "] Stuck pushing box at " + currentBoxPos + " for " + this.pushStuckCounter + " steps, releasing claim")
+					var releasedBox = this.myClaimedBox
+					this.claimedBoxes.remove(this.myClaimedBox)
+					this.myClaimedBox = null
+					this.myTargetExit = null
+					this.myPushPosition = null
+					this.pushStuckCounter = 0
+					this.plannedBoxPath.clear
+					this.currentPathStep = 0
+					this.pathPlanned = false
+					cleanupTeamState
+					// Track this box as recently released to prevent immediate re-claiming
+					if (releasedBox !== null) {
+						this.recentlyReleasedBoxes.put(releasedBox, this.lastPerceptionTime)
+					}
+					this.agentBehaviorPhase = "BOX_SELECTION"
+					return
+				}
+			} else {
+				// Box moved but not closer (might be pushed by another agent) - reset counter
+				this.pushStuckCounter = 0
+			}
+		}
+		
+		// Check if box actually moved from last step (detect failed pushes)
+		if (this.lastBoxPosition !== null && currentBoxPos !== null) {
+			if (this.lastBoxPosition.x == currentBoxPos.x && this.lastBoxPosition.y == currentBoxPos.y) {
+				// Box didn't move - push may have failed
+				this.pushFailureCount++
+				if (this.pushFailureCount >= this.maxPushFailures) {
+					System.out.println("[Agent " + getAgentName + "] Push failed " + this.pushFailureCount + " consecutive times - repositioning")
+					this.pushFailureCount = 0
+					this.agentBehaviorPhase = "ALIGNMENT"
+					return
+				} else {
+					System.out.println("[Agent " + getAgentName + "] Push failed (box didn't move), failure count: " + this.pushFailureCount + "/" + this.maxPushFailures)
+				}
+			} else {
+				// Box moved - reset failure counter
+				this.pushFailureCount = 0
+			}
+		}
+		
+		if (currentBoxPos !== null) {
+			this.lastBoxPosition = currentBoxPos
+		}
+		
+		// Check if box is already on exit - verify it's on TARGET exit
+		var boxObj = findObjectAt(perceivedObjects, currentBoxPos)
+		if (boxObj instanceof BoxObject && (boxObj as BoxObject).isOnTarget) {
+			// Box is on an exit - verify it's the target exit
+			var distanceToTargetExit = calculateDistance(currentBoxPos, this.myTargetExit)
+			if (distanceToTargetExit == 0) {
+				// Box is on target exit - task complete!
+				System.out.println("[Agent " + getAgentName + "] Box confirmed on target exit at " + this.myTargetExit)
+				this.agentBehaviorPhase = "TASK_COMPLETION"
+				return
+			} else {
+				// Box is on a different exit - still consider task complete (any exit is fine)
+				System.out.println("[Agent " + getAgentName + "] Box is on exit (not target exit), but task complete")
+				this.agentBehaviorPhase = "TASK_COMPLETION"
+				return
+			}
+		}
+		
+		// COLLABORATIVE PUSHING: Execute immediately based on role
+		if (this.teamMembers.size > 1 && this.myTaskRole !== null) {
+			if (this.myTaskRole === "HELPER") {
+				// HELPER: Push in same direction as pusher (assist from perpendicular position)
+				var pushDir = calculatePushDirection(currentBoxPos, this.myTargetExit)
+				if (pushDir !== null) {
+					// Helper pushes in same direction as pusher
+					var nextBoxPos = calculateNextPosition(currentBoxPos, pushDir)
+					var nextPosObj = findObjectAt(perceivedObjects, nextBoxPos)
+					
+					// Check if push is valid
+					if (nextPosObj === null || nextPosObj instanceof ExitObject) {
+						// Push is valid - execute immediately
+						this.lastBoxPosition = currentBoxPos
+						emitAction(pushDir)
+						System.out.println("[Agent " + getAgentName + "] HELPER: Assisting push in direction " + pushDir + " (box at " + currentBoxPos + ")")
+						
+						// Update box position tracking
+						if (nextBoxPos !== null) {
+							emit(new BoxPositionUpdate(currentBoxPos, nextBoxPos, ID))
+						}
+						return
+					} else {
+						// Push blocked - try to reposition
+						System.out.println("[Agent " + getAgentName + "] HELPER: Push blocked, repositioning")
+						this.agentBehaviorPhase = "ALIGNMENT"
+						return
+					}
+				} else {
+					// Cannot determine push direction
+					this.agentBehaviorPhase = "ALIGNMENT"
+					return
+				}
+			}
+			// PUSHER continues with normal push logic below
+		}
+		
+		// PUSHER logic (or single agent logic): Push box toward exit
+		// Update push position for current box position
+		calculatePushPositionForBox(currentBoxPos, this.myTargetExit)
+		var distanceToPushPos = calculateDistance(this.myPosition, this.myPushPosition)
+		
+		// Agent must be EXACTLY at push position to push (not just close)
+		if (distanceToPushPos > 0) {
+			System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Not at push position (distance=" + distanceToPushPos + ", agent at " + this.myPosition + ", push pos " + this.myPushPosition + "), returning to ALIGNMENT")
+			this.agentBehaviorPhase = "ALIGNMENT"
+			return
+		}
+		// Agent is at push position, proceed with pushing
+		System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: At push position, starting push (box at " + currentBoxPos + ", exit at " + this.myTargetExit + ")")
+		
+		// PATH PLANNING: Use planned path if available, otherwise fall back to greedy
+		var pushDirection : Direction = null
+		var nextBoxPos : Point2i = null
+		
+		// CRITICAL: Always prioritize planned path if available
+		if (this.pathPlanned && !this.plannedBoxPath.isEmpty && this.currentPathStep < this.plannedBoxPath.size) {
+			// Follow planned path
+			var nextTargetPos = this.plannedBoxPath.get(this.currentPathStep)
+			System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Following planned path step " + this.currentPathStep + "/" + (this.plannedBoxPath.size - 1) + " (target: " + nextTargetPos + ", box at: " + currentBoxPos + ", path size: " + this.plannedBoxPath.size + ")")
+			
+			// Check if we've reached this step (allow small tolerance)
+			var distanceToTarget = calculateDistance(currentBoxPos, nextTargetPos)
+			if (distanceToTarget == 0) {
+				// Reached this step, move to next
+				this.currentPathStep++
+				if (this.currentPathStep < this.plannedBoxPath.size) {
+					nextTargetPos = this.plannedBoxPath.get(this.currentPathStep)
+					System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Reached path step, moving to next: " + nextTargetPos)
+				} else {
+					// Reached end of path (should be at exit)
+					System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Reached end of planned path")
+					this.agentBehaviorPhase = "TASK_COMPLETION"
+					return
+				}
+			} else if (distanceToTarget > 3) {
+				// Box is far from expected path position - find closest point in path
+				var minDist = Integer::MAX_VALUE
+				var closestStep = this.currentPathStep
+				for (var i = 0; i < this.plannedBoxPath.size; i++) {
+					var pathPoint = this.plannedBoxPath.get(i)
+					var dist = calculateDistance(currentBoxPos, pathPoint)
+					if (dist < minDist) {
+						minDist = dist
+						closestStep = i
+					}
+				}
+				if (closestStep != this.currentPathStep) {
+					this.currentPathStep = closestStep
+					nextTargetPos = this.plannedBoxPath.get(this.currentPathStep)
+					System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Box off path, adjusted to step " + this.currentPathStep + " (target: " + nextTargetPos + ")")
+				}
+			}
+			
+			// Calculate direction to next step in path
+			var dx = nextTargetPos.x - currentBoxPos.x
+			var dy = nextTargetPos.y - currentBoxPos.y
+			
+			if (Math::abs(dx) > Math::abs(dy)) {
+				pushDirection = if (dx > 0) Direction::EAST else Direction::WEST
+			} else if (dy != 0) {
+				pushDirection = if (dy > 0) Direction::SOUTH else Direction::NORTH
+			}
+			
+			if (pushDirection !== null) {
+				nextBoxPos = calculateNextPosition(currentBoxPos, pushDirection)
+				System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Using planned path direction " + pushDirection + " (box will move to " + nextBoxPos + ")")
+			}
+		}
+		
+		// Fallback to greedy approach if no path planned or path planning failed
+		if (pushDirection === null) {
+			// Log why path is not being used
+			if (!this.pathPlanned) {
+				System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: No path planned, using greedy approach")
+			} else if (this.plannedBoxPath.isEmpty) {
+				System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Planned path is empty, using greedy approach")
+			} else if (this.currentPathStep >= this.plannedBoxPath.size) {
+				System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Reached end of path, using greedy approach")
+			}
+			
+			pushDirection = calculatePushDirection(currentBoxPos, this.myTargetExit)
+			if (pushDirection === null) {
+				// Cannot push - path blocked or box at exit
+				System.out.println("[Agent " + getAgentName + "] Cannot push - path blocked or box at exit")
+				// Check if box is at exit
+				if (boxObj instanceof BoxObject && (boxObj as BoxObject).isOnTarget) {
+					this.agentBehaviorPhase = "TASK_COMPLETION"
+				} else {
+					// Path blocked, try to reposition
+					this.agentBehaviorPhase = "ALIGNMENT"
+				}
+				return
+			}
+			nextBoxPos = calculateNextPosition(currentBoxPos, pushDirection)
+			System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: Using greedy direction " + pushDirection + " (box will move to " + nextBoxPos + ")")
+		}
+		
+		// Verify the push is valid (box can move in this direction)
+		var nextPosObj = findObjectAt(perceivedObjects, nextBoxPos)
+		
+		// Check if next position is blocked
+		if (nextPosObj !== null && (nextPosObj instanceof WallObject || nextPosObj instanceof BoxObject)) {
+			System.out.println("[Agent " + getAgentName + "] Push blocked at " + nextBoxPos + " by " + (if (nextPosObj instanceof WallObject) "wall" else "box") + " - replanning path")
+			// Replan path (obstacle appeared)
+			var newPath = planBoxPath(currentBoxPos, this.myTargetExit, perceivedObjects)
+			if (!newPath.isEmpty) {
+				this.plannedBoxPath = newPath
+				this.currentPathStep = 0
+				this.pathPlanned = true
+				System.out.println("[Agent " + getAgentName + "] Replanned path with " + newPath.size + " steps")
+				// Retry with new path - recalculate direction
+				if (this.currentPathStep < this.plannedBoxPath.size) {
+					var nextTargetPos = this.plannedBoxPath.get(this.currentPathStep)
+					var dx = nextTargetPos.x - currentBoxPos.x
+					var dy = nextTargetPos.y - currentBoxPos.y
+					if (Math::abs(dx) > Math::abs(dy)) {
+						pushDirection = if (dx > 0) Direction::EAST else Direction::WEST
+					} else if (dy != 0) {
+						pushDirection = if (dy > 0) Direction::SOUTH else Direction::NORTH
+					}
+					if (pushDirection !== null) {
+						nextBoxPos = calculateNextPosition(currentBoxPos, pushDirection)
+						// Re-check if new direction is blocked
+						var recheckObj = findObjectAt(perceivedObjects, nextBoxPos)
+						if (recheckObj !== null && (recheckObj instanceof WallObject || recheckObj instanceof BoxObject)) {
+							System.out.println("[Agent " + getAgentName + "] Replanned push still blocked - repositioning")
+							this.agentBehaviorPhase = "ALIGNMENT"
+							return
+						}
+					}
+				}
+			} else {
+				// No alternative path - try repositioning
+				this.pathPlanned = false
+				this.plannedBoxPath.clear
+				this.currentPathStep = 0
+				System.out.println("[Agent " + getAgentName + "] No alternative path found - repositioning")
+				this.agentBehaviorPhase = "ALIGNMENT"
+				return
+			}
+		}
+		
+		// Calculate distances for validation (needed for both path planning and greedy approaches)
+		var currentDistance = calculateDistance(currentBoxPos, this.myTargetExit)
+		var nextDistance = calculateDistance(nextBoxPos, this.myTargetExit)
+		
+		// Verify box will move closer to exit (for greedy fallback validation)
+		if (!this.pathPlanned) {
+			if (nextDistance >= currentDistance) {
+				// Box would move away from exit or not closer - don't push
+				System.out.println("[Agent " + getAgentName + "] Push would not bring box closer to exit")
+				// Try to reposition
+				this.agentBehaviorPhase = "ALIGNMENT"
+				return
+			}
+		}
+		
+		// DEADLOCK PREVENTION: Check if push would create deadlock OR place box next to OUTER border
+		// Note: Inner walls are fine, only outer border is problematic
+		if (isDeadlockPosition(nextBoxPos, perceivedObjects) || isNextToOuterBorder(nextBoxPos)) {
+			var reason = if (isNextToOuterBorder(nextBoxPos)) "next to outer border" else "deadlock"
+			System.out.println("[Agent " + getAgentName + "] Push would create " + reason + " at " + nextBoxPos + " - trying alternative direction")
+			// Try alternative push direction
+			var altDirection = findAlternativePushDirection(currentBoxPos, this.myTargetExit, pushDirection, perceivedObjects)
+			if (altDirection !== null) {
+				pushDirection = altDirection
+				nextBoxPos = calculateNextPosition(currentBoxPos, pushDirection)
+				nextDistance = calculateDistance(nextBoxPos, this.myTargetExit)
+				// Also check if alternative would place box next to border or deadlock
+				if (nextDistance >= currentDistance || isDeadlockPosition(nextBoxPos, perceivedObjects) || isNextToOuterBorder(nextBoxPos)) {
+					// Alternative also doesn't help - cancel push
+					System.out.println("[Agent " + getAgentName + "] All push directions lead to deadlock/border or don't help - repositioning")
+					this.agentBehaviorPhase = "ALIGNMENT"
+					return
+				}
+			} else {
+				// No alternative direction - cancel push
+				System.out.println("[Agent " + getAgentName + "] No alternative push direction - repositioning")
+				this.agentBehaviorPhase = "ALIGNMENT"
+				return
+			}
+		}
+		
+		// BLOCKING DETECTION: Check if agent is blocking another agent
+		if (isBlockingOtherAgent(perceivedObjects)) {
+			System.out.println("[Agent " + getAgentName + "] Blocking another agent - repositioning to allow passage")
+			// Reposition to allow other agent to pass
+			repositionToAllowPassage(perceivedObjects)
+			return
+		}
+		
+		// CRITICAL VALIDATION: Verify push will succeed before attempting
+		// 1. Check agent is adjacent to box
+		var distanceToBox = calculateDistance(this.myPosition, currentBoxPos)
+		if (distanceToBox != 1) {
+			System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: ERROR - Agent not adjacent to box! Agent at " + this.myPosition + ", box at " + currentBoxPos + " (distance=" + distanceToBox + ")")
+			this.agentBehaviorPhase = "ALIGNMENT"
+			return
+		}
+		
+		// 2. Check space behind box is walkable (critical for push to succeed)
+		var spaceBehindBox = findObjectAt(perceivedObjects, nextBoxPos)
+		if (spaceBehindBox !== null && (spaceBehindBox instanceof WallObject || spaceBehindBox instanceof BoxObject)) {
+			System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: ERROR - Space behind box is blocked! Box at " + currentBoxPos + ", push direction " + pushDirection + ", nextBoxPos " + nextBoxPos + " blocked by " + (if (spaceBehindBox instanceof WallObject) "wall" else "box"))
+			// Replan path - obstacle in the way
+			var newPath = planBoxPath(currentBoxPos, this.myTargetExit, perceivedObjects)
+			if (!newPath.isEmpty) {
+				this.plannedBoxPath = newPath
+				this.currentPathStep = 0
+				this.pathPlanned = true
+				System.out.println("[Agent " + getAgentName + "] Replanned path due to blocked space behind box")
+			} else {
+				this.agentBehaviorPhase = "ALIGNMENT"
+			}
+			return
+		}
+		
+		// 3. Verify agent can move in push direction (into box position)
+		var agentNextPos = calculateNextPosition(this.myPosition, pushDirection)
+		var distanceToBoxFromNext = calculateDistance(agentNextPos, currentBoxPos)
+		if (distanceToBoxFromNext != 0) {
+			System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: ERROR - Push direction " + pushDirection + " from " + this.myPosition + " would move to " + agentNextPos + ", but box is at " + currentBoxPos)
+			this.agentBehaviorPhase = "ALIGNMENT"
+			return
+		}
+		
+		// All validations passed - push should succeed
+		System.out.println("[Agent " + getAgentName + "] PUSH_EXECUTION: All validations passed - pushing box at " + currentBoxPos + " in direction " + pushDirection + " (box will move to " + nextBoxPos + ")")
+		
+		// Push the box
+		this.lastBoxPosition = currentBoxPos
+		emitAction(pushDirection)
+		System.out.println("[Agent " + getAgentName + "] Pushing box at " + currentBoxPos + " toward " + this.myTargetExit + " in direction " + pushDirection)
+		
+		// Track progress: box will move in next step
+		this.boxProgressCount++
+		
+		// Emit box position update when box is pushed (will be updated in next step)
+		// Note: nextBoxPos is already calculated above (line 469 or 488), so we reuse it
+		if (nextBoxPos !== null) {
+			emit(new BoxPositionUpdate(currentBoxPos, nextBoxPos, ID))
+		}
+	}
+	
+	/** PHASE 4: TASK_COMPLETION - Box reached exit, release and select new box. */
+	def handleTaskCompletion(perceivedObjects : List<sokobanObject>) {
+		// Increment timeout counter
+		this.taskCompletionSteps++
+		
+		// Use myClaimedBox for individual assignment approach
+		var boxToComplete = this.myClaimedBox
+		
+		if (boxToComplete !== null) {
+			System.out.println("[Agent " + getAgentName + "] Task completed - box at " + boxToComplete + " reached exit")
+			
+			// Try multiple confirmation methods
+			var boxConfirmed = false
+			
+			// Method 1: Perception-based confirmation (direct observation)
+			// Search ALL perceived boxes - the box might have moved from claimed position
+			for (obj : perceivedObjects) {
+				if (obj instanceof BoxObject) {
+					var boxObj = obj as BoxObject
+					// Check if this box is on target AND is near our claimed position (within 5 cells)
+					// This handles cases where the box moved during pushing
+					var distance = calculateDistance(boxObj.position, boxToComplete)
+					if (distance <= 5 && boxObj.isOnTarget) {
+						// Also verify this box is in our allBoxPositions (it's a box we know about)
+						if (this.allBoxPositions.contains(boxObj.position) || distance <= 2) {
+							boxConfirmed = true
+							boxToComplete = boxObj.position  // Use actual box position
+							System.out.println("[Agent " + getAgentName + "] Box confirmed on exit via perception (isOnTarget=true) at " + boxToComplete + " (was claimed at " + this.myClaimedBox + ", distance=" + distance + ")")
+							break
+						}
+					}
+				}
+			}
+			
+			// Method 2: Position-based confirmation (check if position matches known exit)
+			if (!boxConfirmed && this.allExitPositions.contains(boxToComplete)) {
+				boxConfirmed = true
+				System.out.println("[Agent " + getAgentName + "] Box confirmed on exit via position match (position is in allExitPositions)")
+			}
+			
+			// Method 3: Global-knowledge confirmation (check if box was removed from allBoxPositions)
+			if (!boxConfirmed && !this.allBoxPositions.contains(boxToComplete)) {
+				// Box is not in allBoxPositions - might have been removed because it's on exit
+				// Double-check: if position is an exit, confirm
+				if (this.allExitPositions.contains(boxToComplete)) {
+					boxConfirmed = true
+					System.out.println("[Agent " + getAgentName + "] Box confirmed on exit via global knowledge (removed from allBoxPositions, position is exit)")
+				}
+			}
+			
+			// Method 4: Check if ANY box in perception is on target (broader search)
+			if (!boxConfirmed) {
+				for (obj : perceivedObjects) {
+					if (obj instanceof BoxObject) {
+						var boxObj = obj as BoxObject
+						if (boxObj.isOnTarget) {
+							// If we have a claimed box and this box is on target, check if it's reasonable
+							// (either it's our claimed box or we don't have a claim)
+							if (this.myClaimedBox === null || calculateDistance(boxObj.position, this.myClaimedBox) <= 10) {
+								boxConfirmed = true
+								boxToComplete = boxObj.position
+								System.out.println("[Agent " + getAgentName + "] Box confirmed on exit via broad search (any box on target) at " + boxToComplete)
+								break
+							}
+						}
+					}
+				}
+			}
+			
+			// Method 5: Timeout fallback (after 5 steps, use position-based confirmation)
+			if (!boxConfirmed && this.taskCompletionSteps >= 5) {
+				if (this.allExitPositions.contains(boxToComplete)) {
+					boxConfirmed = true
+					System.out.println("[Agent " + getAgentName + "] Box confirmed on exit via timeout fallback (position is exit)")
+				}
+			}
+			
+			if (boxConfirmed) {
+				// Box confirmed on exit - mark as completed
+				if (!this.completedBoxes.contains(boxToComplete)) {
+					this.completedBoxes.add(boxToComplete)
+					System.out.println("[Agent " + getAgentName + "] Marked box as completed in completedBoxes")
+				}
+				
+			// Announce completion to other agents (all agents announce independently)
+			emit(new BoxCompleted(boxToComplete, ID))
+			System.out.println("[Agent " + getAgentName + "] Announced box completion at " + boxToComplete + " to other agents")
+			
+			// CRITICAL FIX: Notify team members to return to PLANNING
+			if (!this.teamMembers.isEmpty) {
+				for (teamMemberId : this.teamMembers) {
+					if (teamMemberId != ID) {
+						// Emit BoxCompleted - team members will handle it
+						System.out.println("[Agent " + getAgentName + "] Notified team member " + teamMemberId + " that box at " + boxToComplete + " is completed")
+					}
+				}
+			}
+			
+			// Remove from claimed boxes (box is no longer claimable)
+			this.claimedBoxes.remove(boxToComplete)
+			
+			// Clear the exit assignment for this box (exit is now free for other boxes)
+			if (this.myTargetExit !== null) {
+				this.assignedExits.remove(this.myTargetExit)
+				System.out.println("[Agent " + getAgentName + "] Released exit " + this.myTargetExit + " (box completed)")
+			}
+				
+				// DO NOT remove from allBoxPositions - box still exists physically
+				// allBoxPositions tracks physical existence, completedBoxes tracks task completion
+				
+				// Reset timeout counter
+				this.taskCompletionSteps = 0
+			} else {
+				// Box not confirmed yet - wait one more step
+				System.out.println("[Agent " + getAgentName + "] Box not yet confirmed on exit, waiting... (step " + this.taskCompletionSteps + ")")
+				return
+			}
+		}
+		
+		// Release claim
+		this.myClaimedBox = null
+		this.myTargetExit = null
+		this.myPushPosition = null
+		this.lastBoxPosition = null
+		this.plannedBoxPath.clear
+		this.currentPathStep = 0
+		this.pathPlanned = false
+		this.taskCompletionSteps = 0  // Reset counter
+		
+		// Move to planning phase to coordinate remaining boxes
+		this.agentBehaviorPhase = "PLANNING"
+		this.proposalsEmitted = false
+		this.alignmentSteps = 0
+		this.lastAlignmentPosition = null
+		this.recentPositions.clear
+		this.pushFailureCount = 0
+		this.pushStuckCounter = 0
+		// Clear assigned exit when returning to planning (will be reassigned in next coordination)
+		if (this.myTargetExit !== null) {
+			this.assignedExits.remove(this.myTargetExit)
+		}
+		System.out.println("[Agent " + getAgentName + "] Released box, returning to PLANNING to coordinate and select next box")
+	}
+	
+	/** Sync box positions in allBoxPositions with current perceptions.
+	 * Removes stale positions that are not in perceptions and adds new boxes found in perceptions.
+	 * This ensures planning uses accurate box positions.
+	 */
+	def syncBoxPositionsWithPerceptions(perceivedObjects : List<sokobanObject>) {
+		// Collect all box positions from perceptions
+		var perceivedBoxPositions = <Point2i>newHashSet
+		for (obj : perceivedObjects) {
+			if (obj instanceof BoxObject) {
+				perceivedBoxPositions.add(obj.position)
+			}
+		}
+		
+		// Don't remove boxes if we have no perceptions - they might just be out of range
+		// This prevents clearing allBoxPositions when agent can't see any boxes
+		if (perceivedBoxPositions.isEmpty && this.allBoxPositions.size > 0) {
+			// No boxes in perception but we know boxes exist - don't remove them
+			// This handles the case where agent is far from all boxes
+			return
+		}
+		
+		// Remove stale positions from allBoxPositions that are not in perceptions
+		// But keep positions that might be just outside perception range (within reasonable distance)
+		var stalePositions = <Point2i>newArrayList
+		for (knownPos : this.allBoxPositions) {
+			// Check if this position is in perceptions
+			if (!perceivedBoxPositions.contains(knownPos)) {
+				// Check if any perceived box is close to this position (might be the same box that moved)
+				var foundNearby = false
+				for (perceivedPos : perceivedBoxPositions) {
+					var distance = calculateDistance(knownPos, perceivedPos)
+					if (distance <= 3) {  // Within 3 cells - likely the same box
+						foundNearby = true
+						break
+					}
+				}
+				// CRITICAL FIX: Don't remove boxes just because they're far away - they might be valid
+				// Only remove if box is claimed AND far away (likely completed or moved)
+				if (!foundNearby) {
+					var distanceFromAgent = calculateDistance(knownPos, this.myPosition)
+					// Only mark as stale if it's far away AND either completed or not claimed
+					// Keep boxes that are claimed even if far away (agent might be working on them)
+					if (distanceFromAgent > 15 && !this.claimedBoxes.contains(knownPos) && !this.completedBoxes.contains(knownPos)) {
+						// Very far and not claimed - likely stale
+						stalePositions.add(knownPos)
+					}
+				}
+			}
+		}
+		
+		// Remove stale positions
+		for (stalePos : stalePositions) {
+			this.allBoxPositions.remove(stalePos)
+			// Also remove from claimedBoxes if it was claimed
+			if (this.claimedBoxes.contains(stalePos)) {
+				this.claimedBoxes.remove(stalePos)
+			}
+			System.out.println("[Agent " + getAgentName + "] PLANNING: Removed stale box position " + stalePos + " (not in perceptions)")
+		}
+		
+		// Add new boxes found in perceptions that are not in allBoxPositions
+		for (perceivedPos : perceivedBoxPositions) {
+			if (!this.allBoxPositions.contains(perceivedPos)) {
+				this.allBoxPositions.add(perceivedPos)
+				System.out.println("[Agent " + getAgentName + "] PLANNING: Added new box position " + perceivedPos + " from perceptions")
+			}
+		}
+	}
+	
+	/** Find nearest exit to a given position, excluding already assigned exits. */
+	def findNearestExit(position : Point2i) : Point2i {
+		return findNearestExitExcluding(position, this.assignedExits)
+	}
+	
+	/** Find nearest exit to a given position, excluding specified exits. */
+	def findNearestExitExcluding(position : Point2i, excludedExits : HashSet<Point2i>) : Point2i {
+		if (position === null || this.allExitPositions.isEmpty) {
+			return null
+		}
+		
+		var nearestExit : Point2i = null
+		var minDistance = Integer::MAX_VALUE
+		
+		for (exitPos : this.allExitPositions) {
+			// Skip excluded exits (already assigned to other agents)
+			if (excludedExits !== null && excludedExits.contains(exitPos)) {
+				continue
+			}
+			
+			var distance = calculateDistance(position, exitPos)
+			if (distance < minDistance) {
+				minDistance = distance
+				nearestExit = exitPos
+			}
+		}
+		
+		// If all exits are excluded, fall back to any exit (better than no exit)
+		if (nearestExit === null && !this.allExitPositions.isEmpty) {
+			// Use the nearest excluded exit as fallback
+			for (exitPos : this.allExitPositions) {
+				var distance = calculateDistance(position, exitPos)
+				if (distance < minDistance) {
+					minDistance = distance
+					nearestExit = exitPos
+				}
+			}
+		}
+		
+		return nearestExit
+	}
+	
+	/** Find current box position in perceptions (box may have moved).
+	 * If box is not in perceptions, returns null (caller should use global knowledge).
+	 */
+	def findCurrentBoxPosition(claimedBoxPos : Point2i, perceivedObjects : List<sokobanObject>) : Point2i {
+		if (claimedBoxPos === null) {
+			return null
+		}
+		
+		// First check if box is still at claimed position
+		var boxAtClaimedPos = findObjectAt(perceivedObjects, claimedBoxPos)
+		if (boxAtClaimedPos instanceof BoxObject) {
+			return claimedBoxPos
+		}
+		
+		// Search for box in all perceived objects (might have moved)
+		var nearestBox : BoxObject = null
+		var minDistance = Integer::MAX_VALUE
+		
+		for (obj : perceivedObjects) {
+			if (obj instanceof BoxObject) {
+				var distance = calculateDistance(obj.position, claimedBoxPos)
+				// Accept box if it's within reasonable distance (could have moved)
+				if (distance <= 5 && distance < minDistance) {
+					minDistance = distance
+					nearestBox = obj
+				}
+			}
+		}
+		
+		if (nearestBox !== null) {
+			return nearestBox.position
+		}
+		
+		// Box not found in perceptions - return null (caller should use global knowledge)
+		return null
+	}
+	
+	/** Check if claimed box is at an exit. */
+	def checkBoxAtExit(perceivedObjects : List<sokobanObject>) : boolean {
+		if (this.myClaimedBox === null) {
+			return false
+		}
+		
+		// Check if box is at any exit position
+		for (exitPos : this.allExitPositions) {
+			var obj = findObjectAt(perceivedObjects, exitPos)
+			if (obj instanceof BoxObject) {
+				var distance = calculateDistance(obj.position, this.myClaimedBox)
+				if (distance <= 1) {  // Box at or very close to exit
+					return true
+				}
+			}
+		}
+		
+		return false
+	}
+	
+	/** Clean up team state when releasing a claim. */
+	def cleanupTeamState {
+		this.myTaskRole = null
+		this.teamMembers.clear
+		this.helperReadyAgents.clear
+	}
+	
+	/** Calculate push position (behind box, toward exit). */
+	def calculatePushPositionForBox(boxPos : Point2i, exitPos : Point2i) {
+		if (boxPos === null || exitPos === null) {
+			this.myPushPosition = null
+			return
+		}
+		
+		// Calculate direction from box to exit
+		var dx = exitPos.x - boxPos.x
+		var dy = exitPos.y - boxPos.y
+		
+		// Normalize to unit direction (cardinal only)
+		var normDx = 0
+		var normDy = 0
+		if (Math::abs(dx) > Math::abs(dy)) {
+			normDx = if (dx > 0) 1 else -1
+		} else if (dy != 0) {
+			normDy = if (dy > 0) 1 else -1
+		} else {
+			// Box is at exit
+			this.myPushPosition = null
+			return
+		}
+		
+		// Push position is opposite to push direction (behind the box)
+		this.myPushPosition = new Point2i(boxPos.x - normDx, boxPos.y - normDy)
+	}
+	
+	/** Calculate push direction (from box toward exit). */
+	def calculatePushDirection(boxPos : Point2i, exitPos : Point2i) : Direction {
+		if (boxPos === null || exitPos === null) {
+			return null
+		}
+		
+		var dx = exitPos.x - boxPos.x
+		var dy = exitPos.y - boxPos.y
+		
+		// Prefer horizontal movement if equal distance
+		if (Math::abs(dx) > Math::abs(dy)) {
+			return if (dx > 0) Direction::EAST else Direction::WEST
+		} else if (dy != 0) {
+			return if (dy > 0) Direction::SOUTH else Direction::NORTH
+		}
+		
+		return null
+	}
+	
+	/** Calculate position for helper agent to assist pushing.
+	 * 
+	 * Helper should be adjacent to box, perpendicular to push direction.
+	 * Example: If pushing EAST, helper can be NORTH or SOUTH of box.
+	 * 
+	 * @param boxPos current box position
+	 * @param pushDirection direction box is being pushed
+	 * @param perceivedObjects list of perceived objects (for obstacle detection)
+	 * @return position for helper, or null if no valid position
+	 */
+	def calculateHelperPosition(boxPos : Point2i, pushDirection : Direction, perceivedObjects : List<sokobanObject>) : Point2i {
+		if (boxPos === null || pushDirection === null) {
+			return null
+		}
+		
+		// Helper should be adjacent to box, perpendicular to push direction
+		var candidatePositions = <Point2i>newArrayList
+		
+		switch (pushDirection) {
+			case Direction::NORTH: {
+				candidatePositions.add(new Point2i(boxPos.x - 1, boxPos.y))  // WEST
+				candidatePositions.add(new Point2i(boxPos.x + 1, boxPos.y))  // EAST
+			}
+			case Direction::SOUTH: {
+				candidatePositions.add(new Point2i(boxPos.x - 1, boxPos.y))  // WEST
+				candidatePositions.add(new Point2i(boxPos.x + 1, boxPos.y))  // EAST
+			}
+			case Direction::EAST: {
+				candidatePositions.add(new Point2i(boxPos.x, boxPos.y - 1))  // NORTH
+				candidatePositions.add(new Point2i(boxPos.x, boxPos.y + 1))  // SOUTH
+			}
+			case Direction::WEST: {
+				candidatePositions.add(new Point2i(boxPos.x, boxPos.y - 1))  // NORTH
+				candidatePositions.add(new Point2i(boxPos.x, boxPos.y + 1))  // SOUTH
+			}
+			default: {
+				return null
+			}
+		}
+		
+		// Find first walkable position
+		for (pos : candidatePositions) {
+			var obj = findObjectAt(perceivedObjects, pos)
+			if (obj === null) {
+				return pos  // Empty - can stand here
+			}
+			if (obj instanceof ExitObject) {
+				return pos  // Exit is walkable
+			}
+		}
+		
+		return null  // No valid helper position
+	}
+	
+	/** Calculate alternative helper position if primary is blocked. */
+	def calculateAlternativeHelperPosition(boxPos : Point2i, pushDirection : Direction, blockedPos : Point2i, perceivedObjects : List<sokobanObject>) : Point2i {
+		if (boxPos === null || pushDirection === null) {
+			return null
+		}
+		
+		// Try positions on the opposite side of the box from push direction
+		var candidatePositions = <Point2i>newArrayList
+		
+		switch (pushDirection) {
+			case Direction::NORTH: {
+				// Push NORTH - try positions SOUTH of box
+				candidatePositions.add(new Point2i(boxPos.x - 1, boxPos.y + 1))  // SW
+				candidatePositions.add(new Point2i(boxPos.x + 1, boxPos.y + 1))  // SE
+				candidatePositions.add(new Point2i(boxPos.x, boxPos.y + 1))     // S
+			}
+			case Direction::SOUTH: {
+				// Push SOUTH - try positions NORTH of box
+				candidatePositions.add(new Point2i(boxPos.x - 1, boxPos.y - 1))  // NW
+				candidatePositions.add(new Point2i(boxPos.x + 1, boxPos.y - 1))  // NE
+				candidatePositions.add(new Point2i(boxPos.x, boxPos.y - 1))     // N
+			}
+			case Direction::EAST: {
+				// Push EAST - try positions WEST of box
+				candidatePositions.add(new Point2i(boxPos.x - 1, boxPos.y - 1))  // NW
+				candidatePositions.add(new Point2i(boxPos.x - 1, boxPos.y + 1))  // SW
+				candidatePositions.add(new Point2i(boxPos.x - 1, boxPos.y))     // W
+			}
+			case Direction::WEST: {
+				// Push WEST - try positions EAST of box
+				candidatePositions.add(new Point2i(boxPos.x + 1, boxPos.y - 1))  // NE
+				candidatePositions.add(new Point2i(boxPos.x + 1, boxPos.y + 1))  // SE
+				candidatePositions.add(new Point2i(boxPos.x + 1, boxPos.y))     // E
+			}
+			default: {
+				return null
+			}
+		}
+		
+		// Find first walkable position that's not the blocked one
+		for (pos : candidatePositions) {
+			if (pos.equals(blockedPos)) {
+				continue  // Skip blocked position
+			}
+			var obj = findObjectAt(perceivedObjects, pos)
+			if (obj === null) {
+				return pos  // Empty - can stand here
+			}
+			if (obj instanceof ExitObject) {
+				return pos  // Exit is walkable
+			}
+		}
+		
+		return null  // No valid alternative helper position
+	}
+	
+	/** Plan an efficient path from box position to exit using BFS.
+	 * 
+	 * This finds the shortest path the box should take to reach the exit,
+	 * considering obstacles (walls, other boxes).
+	 * 
+	 * @param boxPos current box position
+	 * @param exitPos target exit position
+	 * @param perceivedObjects list of perceived objects (for obstacle detection)
+	 * @return list of positions representing the path, or empty list if no path
+	 */
+	def planBoxPath(boxPos : Point2i, exitPos : Point2i, perceivedObjects : List<sokobanObject>) : LinkedList<Point2i> {
+		if (boxPos === null || exitPos === null) {
+			return newLinkedList
+		}
+		
+		// Build obstacle map from perceptions
+		var obstacles = <Point2i>newHashSet
+		for (obj : perceivedObjects) {
+			if (obj !== null && (obj instanceof WallObject || (obj instanceof BoxObject && !obj.position.equals(boxPos)))) {
+				obstacles.add(obj.position)
+			}
+		}
+		
+		// Also add obstacles from global knowledge (other boxes)
+		for (knownBoxPos : this.allBoxPositions) {
+			if (!knownBoxPos.equals(boxPos) && !this.completedBoxes.contains(knownBoxPos)) {
+				obstacles.add(knownBoxPos)
+			}
+		}
+		
+		// BFS to find path from box to exit
+		var queue = new LinkedList<Point2i>
+		var visited = <Point2i>newHashSet
+		var parent = <Point2i, Point2i>newHashMap
+		
+		queue.add(boxPos)
+		visited.add(boxPos)
+		parent.put(boxPos, null)
+		
+		val directions = #[
+			new Point2i(0, -1),  // NORTH
+			new Point2i(0, 1),   // SOUTH
+			new Point2i(-1, 0),  // WEST
+			new Point2i(1, 0)    // EAST
+		]
+		
+		var found = false
+		while (!queue.isEmpty && !found) {
+			var current = queue.poll
+			
+			if (current.x == exitPos.x && current.y == exitPos.y) {
+				found = true
+				break
+			}
+			
+			for (dir : directions) {
+				var nextPos = new Point2i(current.x + dir.x, current.y + dir.y)
+				
+				// Skip if already visited or blocked
+				if (visited.contains(nextPos) || obstacles.contains(nextPos)) {
+					continue
+				}
+				
+				// Skip if next to outer border (deadlock prevention)
+				if (isNextToOuterBorder(nextPos)) {
+					continue
+				}
+				
+				// Check if position would create deadlock (simplified - corner check)
+				var blockedCount = 0
+				for (checkDir : directions) {
+					var checkPos = new Point2i(nextPos.x + checkDir.x, nextPos.y + checkDir.y)
+					if (obstacles.contains(checkPos) || isNextToOuterBorder(checkPos)) {
+						blockedCount++
+					}
+				}
+				if (blockedCount >= 2) {
+					continue  // Would be in a corner
+				}
+				
+				visited.add(nextPos)
+				parent.put(nextPos, current)
+				queue.add(nextPos)
+			}
+		}
+		
+		// Reconstruct path if found
+		if (found) {
+			var path = new LinkedList<Point2i>
+			var current = exitPos
+			while (current !== null) {
+				path.addFirst(current)
+				current = parent.get(current)
+			}
+			return path
+		}
+		
+		// No path found - return empty list
+		return newLinkedList
+	}
+	
+	/** Calculate efficiency score for handling a box.
+	 * 
+	 * Lower score is better. Considers:
+	 * - Distance from agent to box (alignment cost)
+	 * - Path length from box to exit (pushing cost)
+	 * - Box priority (boxes closer to exits are more valuable)
+	 * 
+	 * @param agentPos current agent position
+	 * @param boxPos box position
+	 * @param exitPos target exit position
+	 * @param pathLength length of planned path from box to exit
+	 * @return efficiency score (lower is better)
+	 */
+	def calculateEfficiencyScore(agentPos : Point2i, boxPos : Point2i, exitPos : Point2i, pathLength : int) : double {
+		if (agentPos === null || boxPos === null || exitPos === null) {
+			return Double::MAX_VALUE
+		}
+		
+		// Calculate alignment cost (distance from agent to box)
+		var alignmentCost = calculateDistance(agentPos, boxPos)
+		
+		// Path cost (number of steps to push box to exit)
+		var pathCost = pathLength
+		
+		// Total estimated steps
+		var totalCost = alignmentCost + pathCost
+		
+		// Factor in box priority (boxes closer to exits are more valuable)
+		// Lower distance = lower priority bonus = better overall score
+		var boxToExitDist = calculateDistance(boxPos, exitPos)
+		var priorityBonus = boxToExitDist * 0.1  // Small weight to prefer boxes closer to exits
+		
+		// Return total efficiency score (lower is better)
+		return totalCost + priorityBonus
+	}
+	
+	/** Check if a position would create a deadlock (box in corner or blocked).
+	 * A deadlock occurs when a box is adjacent to 2+ walls or blocked by boxes.
+	 */
+	def isDeadlockPosition(boxPos : Point2i, perceivedObjects : List<sokobanObject>) : boolean {
+		if (boxPos === null) {
+			return false
+		}
+		
+		// Check 4 adjacent cells (N, S, E, W)
+		val directions = #[
+			new Point2i(0, -1),  // NORTH
+			new Point2i(0, 1),   // SOUTH
+			new Point2i(-1, 0),  // WEST
+			new Point2i(1, 0)    // EAST
+		]
+		
+		var blockedCount = 0
+		for (dir : directions) {
+			var adjPos = new Point2i(boxPos.x + dir.x, boxPos.y + dir.y)
+			var adjObj = findObjectAt(perceivedObjects, adjPos)
+			
+			// Count walls and boxes as blockers
+			if (adjObj !== null && (adjObj instanceof WallObject || adjObj instanceof BoxObject)) {
+				blockedCount++
+			}
+		}
+		
+		// If 2+ adjacent cells are blocked, it's a deadlock (box in corner)
+		return blockedCount >= 2
+	}
+	
+	/** Check if a position is next to the OUTER border wall.
+	 * 
+	 * This only checks for the outer perimeter border, NOT inner walls.
+	 * A box is "next to border" if it's at coordinates very close to the edges:
+	 * - x <= 1 (one cell away from left border at x=0)
+	 * - x >= width-2 (one cell away from right border at x=width-1)
+	 * - y <= 1 (one cell away from top border at y=0)
+	 * - y >= height-2 (one cell away from bottom border at y=height-1)
+	 * 
+	 * Since agents don't know exact dimensions, we infer from global knowledge.
+	 * The maze is typically 20x20, so we use that as default and refine from observations.
+	 */
+	def isNextToOuterBorder(boxPos : Point2i) : boolean {
+		if (boxPos === null) {
+			return false
+		}
+		
+		// Infer maze boundaries from global knowledge (boxes and exits)
+		var maxX = 0
+		var maxY = 0
+		
+		// Find maximum coordinates from all known boxes and exits
+		for (knownBoxPos : this.allBoxPositions) {
+			maxX = Math::max(maxX, knownBoxPos.x)
+			maxY = Math::max(maxY, knownBoxPos.y)
+		}
+		for (exitPos : this.allExitPositions) {
+			maxX = Math::max(maxX, exitPos.x)
+			maxY = Math::max(maxY, exitPos.y)
+		}
+		
+		// If we have no information, use default maze size (20x20 from SokobanBoot)
+		if (maxX == 0 && maxY == 0) {
+			maxX = 20
+			maxY = 20
+		} else {
+			// Add buffer: if max seen is 18, assume maze is 20 (border at 19)
+			// This accounts for the fact that objects are placed in inner area
+			maxX = Math::max(maxX + 2, 20)
+			maxY = Math::max(maxY + 2, 20)
+		}
+		
+		// Border walls are at x=0, x=maxX-1, y=0, y=maxY-1
+		// So "next to border" means x <= 1, x >= maxX-2, y <= 1, or y >= maxY-2
+		return boxPos.x <= 1 || boxPos.x >= maxX - 2 || boxPos.y <= 1 || boxPos.y >= maxY - 2
+	}
+	
+	/** Find an adjacent push position if the primary push position is blocked.
+	 * Tries positions adjacent to the box that are not blocked.
+	 */
+	def findAdjacentPushPosition(boxPos : Point2i, exitPos : Point2i, perceivedObjects : List<sokobanObject>) : Point2i {
+		if (boxPos === null || exitPos === null) {
+			return null
+		}
+		
+		// Try all 4 adjacent positions around the box
+		val adjacentOffsets = #[
+			new Point2i(0, -1),  // NORTH
+			new Point2i(0, 1),   // SOUTH
+			new Point2i(-1, 0),  // WEST
+			new Point2i(1, 0)    // EAST
+		]
+		
+		// Find the best adjacent position (closest to exit and not blocked)
+		var bestPos : Point2i = null
+		var bestDistance = Integer::MAX_VALUE
+		
+		for (offset : adjacentOffsets) {
+			var adjPos = new Point2i(boxPos.x + offset.x, boxPos.y + offset.y)
+			var adjObj = findObjectAt(perceivedObjects, adjPos)
+			
+			// Skip if blocked by wall or box
+			if (adjObj instanceof WallObject || adjObj instanceof BoxObject) {
+				continue
+			}
+			
+			// Calculate distance to exit from this position
+			var distance = calculateDistance(adjPos, exitPos)
+			if (distance < bestDistance) {
+				bestDistance = distance
+				bestPos = adjPos
+			}
+		}
+		
+		return bestPos
+	}
+	
+	/** Find alternative push direction if primary direction would create deadlock.
+	 * Tries other directions that still move box toward exit.
+	 */
+	def findAlternativePushDirection(boxPos : Point2i, exitPos : Point2i, avoidDirection : Direction, perceivedObjects : List<sokobanObject>) : Direction {
+		if (boxPos === null || exitPos === null) {
+			return null
+		}
+		
+		// Try all 4 directions
+		val allDirections = #[Direction::NORTH, Direction::SOUTH, Direction::EAST, Direction::WEST]
+		
+		var bestDirection : Direction = null
+		var bestDistance = Integer::MAX_VALUE
+		
+		for (dir : allDirections) {
+			// Skip the direction we're avoiding
+			if (dir == avoidDirection) {
+				continue
+			}
+			
+			// Calculate next position if we push in this direction
+			var nextPos = calculateNextPosition(boxPos, dir)
+			
+			// Check if this direction would create deadlock OR place box next to outer border
+			if (isDeadlockPosition(nextPos, perceivedObjects) || isNextToOuterBorder(nextPos)) {
+				continue
+			}
+			
+			// Check if this direction moves box closer to exit
+			var currentDistance = calculateDistance(boxPos, exitPos)
+			var nextDistance = calculateDistance(nextPos, exitPos)
+			
+			if (nextDistance < currentDistance && nextDistance < bestDistance) {
+				bestDistance = nextDistance
+				bestDirection = dir
+			}
+		}
+		
+		return bestDirection
+	}
+	
+	/** Check if agent is blocking another agent.
+	 * An agent is blocking if another agent is trying to reach the same box/position.
+	 */
+	def isBlockingOtherAgent(perceivedObjects : List<sokobanObject>) : boolean {
+		if (this.myClaimedBox === null) {
+			return false
+		}
+		
+		// Check if another agent is trying to reach the same box
+		for (entry : this.otherAgentTargets.entrySet) {
+			var otherAgentId = entry.key
+			var otherTargetBox = entry.value
+			
+			// Skip if same agent or no target
+			if (otherAgentId.equals(ID) || otherTargetBox === null) {
+				continue
+			}
+			
+			// Check if other agent is targeting the same box
+			if (otherTargetBox.x == this.myClaimedBox.x && otherTargetBox.y == this.myClaimedBox.y) {
+				// Other agent is targeting same box - check if we're blocking their path
+				var otherAgentPos = this.otherAgentPositions.get(otherAgentId)
+				if (otherAgentPos !== null) {
+					// Calculate if we're in the path between other agent and box
+					var distanceOtherToBox = calculateDistance(otherAgentPos, this.myClaimedBox)
+					var distanceMeToBox = calculateDistance(this.myPosition, this.myClaimedBox)
+					
+					// If other agent is closer to box than us, we might be blocking
+					if (distanceOtherToBox < distanceMeToBox) {
+						// Check if we're in their direct path
+						var dx = this.myClaimedBox.x - otherAgentPos.x
+						var dy = this.myClaimedBox.y - otherAgentPos.y
+						var myDx = this.myPosition.x - otherAgentPos.x
+						var myDy = this.myPosition.y - otherAgentPos.y
+						
+						// If we're in the same direction as the box from other agent's perspective
+						if ((dx > 0 && myDx > 0 && myDx < dx) || (dx < 0 && myDx < 0 && myDx > dx) ||
+						    (dy > 0 && myDy > 0 && myDy < dy) || (dy < 0 && myDy < 0 && myDy > dy)) {
+							System.out.println("[Agent " + getAgentName + "] Blocking agent " + otherAgentId + " trying to reach box at " + this.myClaimedBox)
+							return true
+						}
+					}
+				}
+			}
+		}
+		
+		return false
+	}
+	
+	/** Reposition to allow another agent to pass.
+	 * Moves away from the blocking position temporarily.
+	 */
+	def repositionToAllowPassage(perceivedObjects : List<sokobanObject>) {
+		// Find a safe position to move to (away from claimed box but still accessible)
+		var safeDirections = #[Direction::NORTH, Direction::SOUTH, Direction::EAST, Direction::WEST]
+		
+		for (dir : safeDirections) {
+			var nextPos = calculateNextPosition(this.myPosition, dir)
+			var blockingObj = findObjectAt(perceivedObjects, nextPos)
+			
+			// If position is walkable and not blocking the path to box
+			if (blockingObj === null || !blockingObj.isOccluder) {
+				// Check if this position doesn't block other agents
+				var tempPos = this.myPosition
+				this.myPosition = nextPos
+				if (!isBlockingOtherAgent(perceivedObjects)) {
+					this.myPosition = tempPos
+					emitAction(dir)
+					System.out.println("[Agent " + getAgentName + "] Repositioning to " + nextPos + " to allow passage")
+					return
+				}
+				this.myPosition = tempPos
+			}
+		}
+		
+		// If no safe position found, stay in place (other agent will find alternative)
+		System.out.println("[Agent " + getAgentName + "] Cannot reposition - staying in place")
+	}
+	
+	/** Calculate next position after moving in a direction. */
+	def calculateNextPosition(currentPos : Point2i, direction : Direction) : Point2i {
+		if (currentPos === null || direction === null) {
+			return null
+		}
+		
+		switch (direction) {
+			case Direction::NORTH: return new Point2i(currentPos.x, currentPos.y - 1)
+			case Direction::SOUTH: return new Point2i(currentPos.x, currentPos.y + 1)
+			case Direction::WEST: return new Point2i(currentPos.x - 1, currentPos.y)
+			case Direction::EAST: return new Point2i(currentPos.x + 1, currentPos.y)
+			default: return currentPos
+		}
+	}
+	
+	/** Find a box that is not yet on a goal (needs to be moved to goal). */
+	def findBoxNotOnGoal(boxes : List<BoxObject>) : BoxObject {
+		for (box : boxes) {
+			if (!box.isOnTarget) {
+				return box
+			}
+		}
+		return null
+	}
+	
+	/** Calculate direction to move toward target using BFS pathfinding.
+	 * 
+	 * This replaces the greedy Manhattan distance approach with a proper
+	 * Breadth-First Search pathfinding algorithm that can navigate around
+	 * obstacles (walls, boxes, other agents).
+	 * 
+	 * @param target the target position to reach
+	 * @param perceivedObjects list of objects visible to the agent
+	 * @return the first move direction toward the target, or null if no path exists
+	 */
+	def calculateDirectionToTarget(target : Point2i, perceivedObjects : List<sokobanObject>) : Direction {
+		if (target === null || this.myPosition === null) {
+			return null
+		}
+		
+		// If target is adjacent, use direct movement
+		var dx = target.x - this.myPosition.x
+		var dy = target.y - this.myPosition.y
+		if (Math::abs(dx) + Math::abs(dy) == 1) {
+			// Adjacent cell - check if walkable
+			var nextPos = new Point2i(this.myPosition.x + dx, this.myPosition.y + dy)
+			var blockingObj = findObjectAt(perceivedObjects, nextPos)
+			if (blockingObj === null || !blockingObj.isOccluder) {
+				// Walkable - return direct direction
+				if (dx > 0) return Direction::EAST
+				if (dx < 0) return Direction::WEST
+				if (dy > 0) return Direction::SOUTH
+				if (dy < 0) return Direction::NORTH
+			}
+		}
+		
+		// Use BFS to find path
+		return findNextMoveBFS(this.myPosition, target, perceivedObjects)
+	}
+	
+	/** Breadth-First Search pathfinding to find the next move direction.
+	 * 
+	 * Builds a local grid from perceptions and performs BFS to find the shortest
+	 * path from start to target. Returns only the first move direction.
+	 * 
+	 * @param start starting position
+	 * @param target target position
+	 * @param perceivedObjects list of perceived objects
+	 * @return first move direction, or null if no path exists
+	 */
+	def findNextMoveBFS(start : Point2i, target : Point2i, perceivedObjects : List<sokobanObject>) : Direction {
+		if (start === null || target === null) {
+			return null
+		}
+		
+		// Build local grid from perceptions
+		// Use a bounded grid around the agent (e.g., 30x30 cells)
+		val gridSize = 30
+		val halfSize = gridSize / 2
+		val minX = start.x - halfSize
+		val maxX = start.x + halfSize
+		val minY = start.y - halfSize
+		val maxY = start.y + halfSize
+		
+		// Create grid: true = walkable, false = blocked
+		var grid = new HashMap<String, Boolean>
+		
+		// Initialize all cells as walkable (optimistic assumption)
+		// Then mark blocked cells based on perceptions
+		for (obj : perceivedObjects) {
+			var pos = obj.position
+			if (pos.x >= minX && pos.x <= maxX && pos.y >= minY && pos.y <= maxY) {
+				var key = pos.x + "," + pos.y
+				// Mark occluders (walls, boxes, agents) as blocked
+				if (obj.isOccluder) {
+					grid.put(key, false)
+				} else {
+					// Non-occluders (exits, pills) are walkable
+					grid.put(key, true)
+				}
+			}
+		}
+		
+		// Check if target is within bounds
+		if (target.x < minX || target.x > maxX || target.y < minY || target.y > maxY) {
+			// Target outside perception range - use greedy fallback
+			return calculateDirectionToTargetGreedy(target)
+		}
+		
+		// BFS queue: stores (x, y) positions
+		var queue = new LinkedList<Point2i>
+		queue.add(start)
+		
+		// Visited set
+		var visited = new HashSet<String>
+		visited.add(start.x + "," + start.y)
+		
+		// Parent map: (x,y) -> (parentX, parentY) to reconstruct path
+		var parent = new HashMap<String, Point2i>
+		parent.put(start.x + "," + start.y, null)
+		
+		// 4-directional movement vectors: [dx, dy]
+		val dxs = #[0, 1, 0, -1]   // NORTH, EAST, SOUTH, WEST
+		val dys = #[-1, 0, 1, 0]   // NORTH, EAST, SOUTH, WEST
+		
+		// BFS main loop
+		while (!queue.isEmpty) {
+			var current = queue.poll
+			
+			// Check if we reached the target
+			if (current.x == target.x && current.y == target.y) {
+				// Reconstruct path to find first move
+				return reconstructFirstMove(start, target, parent)
+			}
+			
+			// Explore neighbors in 4 directions
+			for (i : 0..<dxs.size) {
+				var dx = dxs.get(i)
+				var dy = dys.get(i)
+				var nextX = current.x + dx
+				var nextY = current.y + dy
+				var nextKey = nextX + "," + nextY
+				
+				// Check bounds
+				if (nextX < minX || nextX > maxX || nextY < minY || nextY > maxY) {
+					continue
+				}
+				
+				// Check if visited
+				if (visited.contains(nextKey)) {
+					continue
+				}
+				
+				// Check if this is the target (allow even if blocked, e.g., for boxes)
+				var isTarget = (nextX == target.x && nextY == target.y)
+				
+				// Check if walkable (default to true if not in grid)
+				var isWalkable = grid.get(nextKey)
+				if (isWalkable === null) {
+					isWalkable = true  // Unknown cells assumed walkable
+				}
+				// Allow target cell even if blocked (we want to reach boxes/exits)
+				if (!isWalkable && !isTarget) {
+					continue
+				}
+				
+				// Add to queue
+				var nextPos = new Point2i(nextX, nextY)
+				queue.add(nextPos)
+				visited.add(nextKey)
+				parent.put(nextKey, current)
+			}
+		}
+		
+		// No path found - use greedy fallback
+		System.out.println("[Agent " + getAgentName + "] BFS: No path found from " + start + " to " + target + ", using greedy fallback")
+		return calculateDirectionToTargetGreedy(target)
+	}
+	
+	/** Reconstruct the first move direction from BFS parent map.
+	 * 
+	 * @param start starting position
+	 * @param target target position
+	 * @param parent parent map from BFS
+	 * @return first move direction
+	 */
+	def reconstructFirstMove(start : Point2i, target : Point2i, parent : Map<String, Point2i>) : Direction {
+		var current = target
+		var path = new ArrayList<Point2i>
+		
+		// Reconstruct path backwards from target to start
+		while (current !== null && !current.equals(start)) {
+			path.add(0, current)  // Add to front
+			var key = current.x + "," + current.y
+			current = parent.get(key)
+		}
+		
+		if (path.isEmpty) {
+			return null
+		}
+		
+		// Get first step in path
+		var firstStep = path.get(0)
+		var dx = firstStep.x - start.x
+		var dy = firstStep.y - start.y
+		
+		// Return direction
+		if (dx > 0) return Direction::EAST
+		if (dx < 0) return Direction::WEST
+		if (dy > 0) return Direction::SOUTH
+		if (dy < 0) return Direction::NORTH
+		
+		return null
+	}
+	
+	/** Greedy fallback when BFS fails (for targets outside perception range).
+	 * 
+	 * @param target target position
+	 * @return greedy direction
+	 */
+	def calculateDirectionToTargetGreedy(target : Point2i) : Direction {
+		if (target === null || this.myPosition === null) {
+			return null
+		}
+		
+		var dx = target.x - this.myPosition.x
+		var dy = target.y - this.myPosition.y
+		
+		// Prefer horizontal movement if equal distance
+		if (Math::abs(dx) > Math::abs(dy)) {
+			return if (dx > 0) Direction::EAST else Direction::WEST
+		} else if (dy !== 0) {
+			return if (dy > 0) Direction::SOUTH else Direction::NORTH
+		}
+		
+		return null
+	}
+	
+	/** Calculate next position given current position and direction. */
+	def calculateNextPosition(pos : Point2i, dir : Direction) : Point2i {
+		if (pos === null || dir === null) {
+			return null
+		}
+		
+		var vec = dir.toVector
+		return new Point2i(pos.x + vec.x, pos.y + vec.y)
+	}
+	
+	/** Find object at given position in perceived objects. */
+	def findObjectAt(perceivedObjects : List<sokobanObject>, pos : Point2i) : sokobanObject {
+		if (pos === null) {
+			return null
+		}
+		
+		for (obj : perceivedObjects) {
+			if (obj.position.equals(pos)) {
+				return obj
+			}
+		}
+		return null
+	}
+	
+	/** Find alternative direction to target when primary direction is blocked. */
+	def findAlternativeDirectionToTarget(target : Point2i, blockedDirection : Direction, perceivedObjects : List<sokobanObject>) : Direction {
+		if (target === null || this.myPosition === null) {
+			return null
+		}
+		
+		// Try other directions (not the blocked one)
+		var directions = #[Direction::NORTH, Direction::SOUTH, Direction::EAST, Direction::WEST]
+		var bestDir : Direction = null
+		var minDistance = Integer::MAX_VALUE
+		
+		for (dir : directions) {
+			if (dir == blockedDirection) {
+				continue  // Skip blocked direction
+			}
+			
+			var nextPos = calculateNextPosition(this.myPosition, dir)
+			var nextPosObj = findObjectAt(perceivedObjects, nextPos)
+			
+			// Check if this direction is walkable
+			if (nextPosObj === null || nextPosObj instanceof ExitObject) {
+				// Walkable - check if it gets us closer to target
+				var dist = calculateDistance(nextPos, target)
+				if (dist < minDistance) {
+					minDistance = dist
+					bestDir = dir
+				}
+			}
+		}
+		
+		return bestDir
+	}
+	
+	/** Wrapper for move() that ensures only one action per step. */
+	def emitAction(direction : Direction) {
+		if (this.actionEmittedThisStep) {
+			System.out.println("[Agent " + getAgentName + "] Action already emitted this step, ignoring " + direction)
+			return
+		}
+		this.actionEmittedThisStep = true
+		move(direction)
+	}
+	
+	/** Validate if pushing state is still valid before continuing.
+	 * 
+	 * Checks if:
+	 * - Task exists
+	 * - Box still exists and is visible
+	 * - Box is not already on goal
+	 * 
+	 * @param perceivedObjects list of perceived objects
+	 * @return true if pushing state is valid, false otherwise
+	 */
+	def validatePushingState(perceivedObjects : List<sokobanObject>) : boolean {
+		if (this.activeBoxTask === null) {
+			return false
+		}
+		
+		// Check if box still exists and is visible
+		var storedBoxPos = this.activeBoxTask.getBoxPosition
+		var box = findObjectAt(perceivedObjects, storedBoxPos)
+		
+		// If box not at stored position, search for it in all perceived objects
+		if (box === null || !(box instanceof BoxObject)) {
+			// Search for box in all perceived objects (might have moved)
+			for (obj : perceivedObjects) {
+				if (obj instanceof BoxObject) {
+					var distance = calculateDistance(obj.position, storedBoxPos)
+					if (distance <= 10) {  // Box moved but still close
+						box = obj
+						break
+					}
+				}
+			}
+		}
+		
+		if (box === null) {
+			// Box not found - might be at goal or moved out of perception
+			return false
+		}
+		
+		// Check if box is already on goal
+		if ((box as BoxObject).isOnTarget) {
+			return false  // Task complete
+		}
+		
+		return true
+	}
+	
+	/** Validate that the current task is still valid. */
+	def validateTask(perceivedObjects : List<sokobanObject>) : boolean {
+		if (this.activeBoxTask === null) {
+			return false
+		}
+		
+		// Search for box in perceptions
+		var storedBoxPos = this.activeBoxTask.getBoxPosition
+		var boxFound = false
+		
+		// Check if box is at stored position
+		var boxAtStoredPos = findObjectAt(perceivedObjects, storedBoxPos)
+		if (boxAtStoredPos instanceof BoxObject) {
+			boxFound = true
+			this.taskFailureCount = 0  // Reset failure count on success
+		} else {
+			// Search for box in all perceived objects (might have moved)
+			for (obj : perceivedObjects) {
+				if (obj instanceof BoxObject) {
+					// Check if box is within reasonable distance of stored position
+					var distance = calculateDistance(obj.position, storedBoxPos)
+					if (distance <= 10) {  // Box moved but still close
+						boxFound = true
+						this.taskFailureCount = 0
+						// Update task with new position
+						this.activeBoxTask.updateBoxPosition(obj.position)
+						break
+					}
+				}
+			}
+		}
+		
+		// Check if box is at goal (task completed)
+		if (!boxFound) {
+			var targetGoal = this.activeBoxTask.getTargetGoal
+			var boxAtGoal = findObjectAt(perceivedObjects, targetGoal)
+			if (boxAtGoal instanceof BoxObject && (boxAtGoal as BoxObject).isOnTarget) {
+				// Box is on goal - task completed, not invalid
+				return true
+			}
+		}
+		
+		// If box not found, increment failure count
+		if (!boxFound) {
+			this.taskFailureCount++
+			System.out.println("[Agent " + getAgentName + "] Task validation failed: box not found (failure count: " + this.taskFailureCount + "/" + MAX_TASK_FAILURES + ")")
+			
+			// Cancel task if too many failures
+			if (this.taskFailureCount >= MAX_TASK_FAILURES) {
+				System.out.println("[Agent " + getAgentName + "] Task cancelled after " + MAX_TASK_FAILURES + " consecutive failures")
+				return false
+			}
+		}
+		
+		return boxFound
+	}
+	
+	/** Cancel the current task and reset state. */
+	def cancelTask(reason : String) {
+		if (this.activeBoxTask !== null) {
+			System.out.println("[Agent " + getAgentName + "] Cancelling task " + this.activeBoxTask.getBoxId + ": " + reason)
+			emit(new BoxTaskCompleted(this.activeBoxTask.getBoxId))  // Notify others
+		}
+		this.activeBoxTask = null
+		this.myTaskRole = null
+		this.myPushPosition = null
+		this.readyAgents.clear
+		this.taskFailureCount = 0
+		this.coordinationState = "EXPLORING"
+		System.out.println("[Agent " + getAgentName + "] Task cancelled, returning to EXPLORING")
+	}
+	
+	/** Handle box blocking the path - UPDATED to use clearing points instead of exit. */
+	def handleBoxBlocking(box : BoxObject, direction : Direction, boxPos : Point2i) {
+		// If we have an active box task for this box, use clearing point direction
+		if (this.activeBoxTask !== null && this.activeBoxTask.getBoxPosition.equals(boxPos)) {
+			// Use task's push direction (toward clearing point)
+			var pushDirection = this.activeBoxTask.getPushDirection
+			emitAction(pushDirection)
+			return
+		}
+		
+		// Legacy behavior: if no active task, use provided direction
+		// This maintains backward compatibility
+		this.coordinationState = "PUSHING_BOX"
+		this.assignedBox = boxPos
+		emitAction(direction)
+		
+		// Request help if box is heavy or stuck
+		if (this.pendingHelpRequest === null) {
+			this.pendingHelpRequest = new RequestHelp(
+				ID,
+				boxPos,
+				direction,
+				"I need help pushing this box"
+			)
+			emit(this.pendingHelpRequest)
+			System.out.println("[Agent " + getAgentName + "] Requested help pushing box at " + boxPos)
+		}
+	}
+	
+	/** Find boxes in perceived objects. */
+	def findBoxes(perceivedObjects : List<sokobanObject>) : List<BoxObject> {
+		var boxes = new ArrayList<BoxObject>
+		System.out.println("[Agent " + getAgentName + "] findBoxes: checking " + perceivedObjects.size + " perceived objects")
+		for (obj : perceivedObjects) {
+			System.out.println("[Agent " + getAgentName + "]   Object type: " + obj.class.simpleName + " at " + obj.position)
+			if (obj instanceof BoxObject) {
+				System.out.println("[Agent " + getAgentName + "]   Found BoxObject at " + obj.position)
+				boxes.add(obj)
+			}
+		}
+		System.out.println("[Agent " + getAgentName + "] findBoxes: found " + boxes.size + " box(es)")
+		return boxes
+	}
+	
+	/** Find boxes that are blocking paths (not already on clearing points). */
+	def findBlockingBoxes(perceivedObjects : List<sokobanObject>) : List<BoxObject> {
+		var boxes = findBoxes(perceivedObjects)
+		var blockingBoxes = new ArrayList<BoxObject>
+		
+		for (box : boxes) {
+			// Only consider boxes that are NOT on goals
+			// Boxes already on goals don't need to be moved
+			if (!box.isOnTarget) {
+				blockingBoxes.add(box)
+			}
+		}
+		
+		return blockingBoxes
+	}
+	
+	/** Find the nearest unoccupied goal (exit) for a box.
+	 * This replaces findClearingPoint() - boxes are pushed TO goals, not away from them.
+	 * Checks perceived objects for goals. If no goal is perceived, returns a heuristic target
+	 * (center of maze) to encourage exploration toward goals.
+	 */
+	def findNearestGoal(boxPosition : Point2i, perceivedObjects : List<sokobanObject>) : Point2i {
+		var nearestGoalPos : Point2i = null
+		var minDistance = Integer::MAX_VALUE
+		
+		// Check global knowledge of exit positions (exits are cell properties, not objects)
+		for (exitPos : this.allExitPositions) {
+			// Check if goal is already occupied by a box
+			var goalBox = findBoxAt(exitPos, perceivedObjects)
+			if (goalBox === null) {  // Goal is free
+				var distance = calculateDistance(boxPosition, exitPos)
+				if (distance < minDistance) {
+					minDistance = distance
+					nearestGoalPos = exitPos
+				}
+			}
+		}
+		
+		// If no goal found in perception, use heuristic: push toward center of maze
+		// This encourages exploration and movement toward where goals likely are
+		if (nearestGoalPos === null) {
+			// Estimate maze center (assuming 20x20 from logs)
+			// Agents will explore and eventually perceive goals
+			var estimatedCenter = new Point2i(10, 10)
+			System.out.println("[Agent " + getAgentName + "] No goal perceived, using heuristic target (center) for box at " + boxPosition)
+			return estimatedCenter
+		}
+		
+		return nearestGoalPos
+	}
+	
+	/** Find a box at a specific position. */
+	def findBoxAt(position : Point2i, perceivedObjects : List<sokobanObject>) : BoxObject {
+		for (obj : perceivedObjects) {
+			if (obj instanceof BoxObject && obj.position.equals(position)) {
+				return obj
+			}
+		}
+		return null
+	}
+	
+	/** Evaluate a candidate clearing point (higher score = better). */
+	def evaluateClearingPoint(candidate : Point2i, boxPosition : Point2i, perceivedObjects : List<sokobanObject>) : int {
+		var score = 0
+		
+		// Check if cell is empty (not wall, not box, not agent)
+		var obj = findObjectAt(perceivedObjects, candidate)
+		if (obj !== null) {
+			if (obj.isOccluder) {
+				return -1000  // Blocked by wall/box/agent
+			}
+		}
+		
+		// Prefer cells not adjacent to walls
+		var adjacentWalls = countAdjacentWalls(candidate, perceivedObjects)
+		score -= adjacentWalls * 10
+		
+		// Note: Clearing points are being replaced with goals
+		// This scoring logic will be updated in Phase 1.3
+		
+		// Prefer cells with more open space around them
+		var openNeighbors = countOpenNeighbors(candidate, perceivedObjects)
+		score += openNeighbors * 2
+		
+		return score
+	}
+	
+	/** Count walls adjacent to a position. */
+	def countAdjacentWalls(pos : Point2i, perceivedObjects : List<sokobanObject>) : int {
+		var count = 0
+		val neighbors = #[
+			new Point2i(pos.x + 1, pos.y),
+			new Point2i(pos.x - 1, pos.y),
+			new Point2i(pos.x, pos.y + 1),
+			new Point2i(pos.x, pos.y - 1)
+		]
+		
+		for (neighbor : neighbors) {
+			var obj = findObjectAt(perceivedObjects, neighbor)
+			if (obj instanceof WallObject) {
+				count++
+			}
+		}
+		
+		return count
+	}
+	
+	/** Count open (walkable) neighbors. */
+	def countOpenNeighbors(pos : Point2i, perceivedObjects : List<sokobanObject>) : int {
+		var count = 0
+		val neighbors = #[
+			new Point2i(pos.x + 1, pos.y),
+			new Point2i(pos.x - 1, pos.y),
+			new Point2i(pos.x, pos.y + 1),
+			new Point2i(pos.x, pos.y - 1)
+		]
+		
+		for (neighbor : neighbors) {
+			var obj = findObjectAt(perceivedObjects, neighbor)
+			if (obj === null || !obj.isOccluder) {
+				count++
+			}
+		}
+		
+		return count
+	}
+	
+	/** Handle Priority 1: PUSHING_COMMITMENT - Active box task.
+	 * 
+	 * Now includes post-push re-evaluation to fix oscillation/loop issues.
+	 */
+	def handlePushingCommitment(perceivedObjects : List<sokobanObject>) {
+		if (this.activeBoxTask === null) {
+			return
+		}
+		
+		// Validate pushing state before continuing
+		if (!validatePushingState(perceivedObjects)) {
+			System.out.println("[Agent " + getAgentName + "] Pushing state invalid - cancelling task")
+			cancelTask("Pushing state validation failed")
+			return
+		}
+		
+		// Verify box still exists and is not already on goal
+		var storedBoxPos = this.activeBoxTask.getBoxPosition
+		var box = findObjectAt(perceivedObjects, storedBoxPos)
+		
+		// If box not at stored position, search for it in all perceived objects
+		var currentBox : BoxObject = null
+		var currentBoxPosition : Point2i = null
+		if (box === null || !(box instanceof BoxObject)) {
+			// Box moved - find it in perceptions
+			for (obj : perceivedObjects) {
+				if (obj instanceof BoxObject) {
+					// Match box by proximity to stored position (within reasonable distance)
+					if (currentBox === null || 
+						calculateDistance(obj.position, storedBoxPos) < 
+						calculateDistance(currentBoxPosition, storedBoxPos)) {
+						currentBox = obj
+						currentBoxPosition = obj.position
+					}
+				}
+			}
+			
+			if (currentBox === null) {
+				// Box not found in perceptions - check if it's at goal
+				var targetGoal = this.activeBoxTask.getTargetGoal
+				var boxAtGoal = findObjectAt(perceivedObjects, targetGoal)
+				if (boxAtGoal instanceof BoxObject && (boxAtGoal as BoxObject).isOnTarget) {
+					// Box is on goal - task completed
+					System.out.println("[Agent " + getAgentName + "] Box is on goal at " + targetGoal + ", completing task")
+					this.activeBoxTask.markCompleted
+					emit(new BoxTaskCompleted(this.activeBoxTask.getBoxId))
+					cancelTask("Box reached goal")
+					return
+				}
+				// Box not found anywhere - increment failure count
+				this.taskFailureCount++
+				System.out.println("[Agent " + getAgentName + "] Box not found in perceptions (failure count: " + this.taskFailureCount + "/" + MAX_TASK_FAILURES + ")")
+				
+				// Cancel task if too many failures
+				if (this.taskFailureCount >= MAX_TASK_FAILURES) {
+					cancelTask("Box not found after " + MAX_TASK_FAILURES + " attempts")
+					return
+				}
+				// Task still active but box not found - try again next step
+				return
+			}
+			
+			// Box found at new position - UPDATE TASK
+			System.out.println("[Agent " + getAgentName + "] Box moved from " + storedBoxPos + " to " + currentBoxPosition + ", updating task")
+			this.activeBoxTask.updateBoxPosition(currentBoxPosition)
+			box = currentBox
+			// Reset push position to force recalculation
+			this.myPushPosition = null
+			// Reset failure count on successful box detection
+			this.taskFailureCount = 0
+		} else {
+			currentBox = box as BoxObject
+			currentBoxPosition = storedBoxPos
+		}
+		
+		// Check if box is on goal
+		if (currentBox.isOnTarget) {
+			// Box is already on a goal - task completed
+			System.out.println("[Agent " + getAgentName + "] Box at " + this.activeBoxTask.getBoxPosition + " is already on goal, completing task")
+			this.activeBoxTask.markCompleted
+			emit(new BoxTaskCompleted(this.activeBoxTask.getBoxId))
+			this.activeBoxTask = null
+			this.myTaskRole = null
+			this.myPushPosition = null
+			this.readyAgents.clear
+			this.coordinationState = "EXPLORING"
+			return
+		}
+		
+		// Update coordination state to reflect commitment
+		if (this.coordinationState != "PUSHING_BOX") {
+			this.coordinationState = "PUSHING_BOX"
+			System.out.println("[Agent " + getAgentName + "] Entered PUSHING_COMMITMENT mode for task " + this.activeBoxTask.getBoxId)
+		}
+		
+		// Use CURRENT box position from task (already updated above if box moved)
+		var currentBoxPos = this.activeBoxTask.getBoxPosition
+		
+		// Recalculate push position based on CURRENT box position (always toward goal)
+		if (currentBoxPos !== null) {
+			var targetGoal = this.activeBoxTask.getTargetGoal
+			var dx = targetGoal.x - currentBoxPos.x
+			var dy = targetGoal.y - currentBoxPos.y
+			
+			// Normalize to unit direction (cardinal only)
+			var normDx = 0
+			var normDy = 0
+			if (Math::abs(dx) > Math::abs(dy)) {
+				normDx = if (dx > 0) 1 else -1
+			} else if (dy != 0) {
+				normDy = if (dy > 0) 1 else -1
+			} else {
+				// Box is at goal - shouldn't happen, but default to EAST
+				normDx = 1
+			}
+			
+			// Push position is opposite to push direction (behind the box, toward goal)
+			this.myPushPosition = new Point2i(currentBoxPos.x - normDx, currentBoxPos.y - normDy)
+		}
+		
+		// Calculate push position if not set
+		if (this.myPushPosition === null) {
+			calculatePushPosition(perceivedObjects)
+			if (this.myPushPosition === null) {
+				System.out.println("[Agent " + getAgentName + "] Failed to calculate push position")
+				return
+			}
+		}
+		
+		// Always recalculate push position based on CURRENT box position (never stale)
+		// This ensures we're always using the most up-to-date box position
+		calculatePushPosition(perceivedObjects)
+		
+		// Move toward assigned pushing position using BFS
+		var distanceToPushPos = calculateDistance(this.myPosition, this.myPushPosition)
+		if (distanceToPushPos > 0) {
+			// Not in position yet - move toward it
+			System.out.println("[Agent " + getAgentName + "] Moving toward push position " + this.myPushPosition + " (distance=" + distanceToPushPos + ") to push box toward goal " + this.activeBoxTask.getTargetGoal)
+			var direction = calculateDirectionToTarget(this.myPushPosition, perceivedObjects)
+			if (direction !== null) {
+				emitAction(direction)
+			} else {
+				System.out.println("[Agent " + getAgentName + "] BFS failed to find path to push position")
+			}
+		} else {
+			// In position - wait for synchronization (handled by Priority 3)
+			System.out.println("[Agent " + getAgentName + "] In push position, waiting for sync")
+			handleWaitingForPushSync(perceivedObjects)
+		}
+	}
+	
+	/** Re-evaluate situation after a push action.
+	 * 
+	 * Critical method that verifies:
+	 * - Did the box actually move?
+	 * - Is the box closer to the exit?
+	 * - Is the path still valid?
+	 * - Should we continue, abort, or change strategy?
+	 * 
+	 * @param perceivedObjects list of perceived objects
+	 * @param oldBoxPosition the box position before the push
+	 */
+	def reEvaluateAfterPush(perceivedObjects : List<sokobanObject>, oldBoxPosition : Point2i) {
+		if (this.activeBoxTask === null) {
+			return
+		}
+		
+		var targetGoal = this.activeBoxTask.getTargetGoal
+		var currentBox : BoxObject = null
+		var currentBoxPosition : Point2i = null
+		
+		// 1. Find current box position (box may have moved)
+		var boxAtOldPos = findObjectAt(perceivedObjects, oldBoxPosition)
+		if (boxAtOldPos instanceof BoxObject) {
+			// Box still at old position - push may have failed
+			currentBox = boxAtOldPos
+			currentBoxPosition = oldBoxPosition
+			System.out.println("[Agent " + getAgentName + "] Push evaluation: Box still at old position " + oldBoxPosition + " - push may have failed")
+		} else {
+			// Box not at old position - search for it in all perceived objects
+			for (obj : perceivedObjects) {
+				if (obj instanceof BoxObject) {
+					// Check if this box is close to the old position (likely the same box)
+					var distance = calculateDistance(obj.position, oldBoxPosition)
+					if (distance <= 2) {  // Box moved within 2 cells (one push)
+						currentBox = obj
+						currentBoxPosition = obj.position
+						break
+					}
+				}
+			}
+		}
+		
+		// 2. If box found, verify it moved closer to goal
+		if (currentBox !== null && currentBoxPosition !== null) {
+			var oldDistance = calculateDistance(oldBoxPosition, targetGoal)
+			var newDistance = calculateDistance(currentBoxPosition, targetGoal)
+			
+			System.out.println("[Agent " + getAgentName + "] Push evaluation: Box at " + currentBoxPosition + " (was " + oldBoxPosition + "), distance to goal: " + newDistance + " (was " + oldDistance + ")")
+			
+			// Check if box moved closer to goal
+			if (newDistance < oldDistance) {
+				// Box moved closer - good progress
+				System.out.println("[Agent " + getAgentName + "] Push evaluation: Box moved closer to goal - continuing")
+				// Update task with new box position
+				this.activeBoxTask.updateBoxPosition(currentBoxPosition)
+				// Clear push position to force recalculation based on new position
+				this.myPushPosition = null
+				this.taskFailureCount = 0  // Reset failure count on success
+			} else if (newDistance == oldDistance) {
+				// Box moved but distance unchanged - might be wrong direction
+				System.out.println("[Agent " + getAgentName + "] Push evaluation: Box moved but distance unchanged - may need strategy change")
+				this.activeBoxTask.updateBoxPosition(currentBoxPosition)
+				this.myPushPosition = null  // Force recalculation
+			} else {
+				// Box moved away from goal - wrong direction or stuck
+				System.out.println("[Agent " + getAgentName + "] Push evaluation: Box moved AWAY from goal - strategy needs recalculation")
+				this.activeBoxTask.updateBoxPosition(currentBoxPosition)
+				this.myPushPosition = null  // Force recalculation
+			}
+			
+			// Check if box is now on goal
+			if (currentBox.isOnTarget) {
+				System.out.println("[Agent " + getAgentName + "] Push evaluation: Box is now on goal - task completed!")
+				this.activeBoxTask.markCompleted
+				emit(new BoxTaskCompleted(this.activeBoxTask.getBoxId))
+				cancelTask("Box reached goal")
+				return
+			}
+		} else {
+			// Box not found - might be at goal or out of perception
+			System.out.println("[Agent " + getAgentName + "] Push evaluation: Box not found in perceptions")
+			// Check if box is at goal (might be out of perception range)
+			var boxAtGoal = findObjectAt(perceivedObjects, targetGoal)
+			if (boxAtGoal instanceof BoxObject && (boxAtGoal as BoxObject).isOnTarget) {
+				System.out.println("[Agent " + getAgentName + "] Push evaluation: Box found at goal - task completed!")
+				this.activeBoxTask.markCompleted
+				emit(new BoxTaskCompleted(this.activeBoxTask.getBoxId))
+				cancelTask("Box reached goal")
+				return
+			}
+			
+			// Box not found and not at goal - increment failure count
+			this.taskFailureCount++
+			if (this.taskFailureCount >= MAX_TASK_FAILURES) {
+				cancelTask("Box not found after push")
+				return
+			}
+		}
+	}
+	
+	/** Calculate the position agent should be in for pushing.
+	 * 
+	 * Always uses CURRENT box position from task (never stale positions).
+	 * Recalculates push position based on current box position and target goal.
+	 * 
+	 * @param perceivedObjects list of perceived objects (for validation)
+	 */
+	def calculatePushPosition(perceivedObjects : List<sokobanObject>) {
+		if (this.activeBoxTask === null) {
+			return
+		}
+		
+		// Always use CURRENT box position from task (updated after each push)
+		var boxPos = this.activeBoxTask.getBoxPosition
+		var targetGoal = this.activeBoxTask.getTargetGoal
+		
+		if (boxPos === null || targetGoal === null) {
+			System.out.println("[Agent " + getAgentName + "] Cannot calculate push position: boxPos or targetGoal is null")
+			return
+		}
+		
+		// Verify box position is current by checking perceptions
+		var currentBox = findObjectAt(perceivedObjects, boxPos)
+		if (currentBox === null || !(currentBox instanceof BoxObject)) {
+			// Box not at stored position - search for it
+			for (obj : perceivedObjects) {
+				if (obj instanceof BoxObject) {
+					var distance = calculateDistance(obj.position, boxPos)
+					if (distance <= 10) {  // Box moved but still close
+						// Update task with actual current position
+						this.activeBoxTask.updateBoxPosition(obj.position)
+						boxPos = obj.position
+						System.out.println("[Agent " + getAgentName + "] Updated box position to current: " + boxPos)
+						break
+					}
+				}
+			}
+		}
+		
+		// Calculate direction from CURRENT box position to goal
+		var dx = targetGoal.x - boxPos.x
+		var dy = targetGoal.y - boxPos.y
+		
+		// Normalize to unit direction (cardinal only)
+		var normDx = 0
+		var normDy = 0
+		if (Math::abs(dx) > Math::abs(dy)) {
+			normDx = if (dx > 0) 1 else -1
+		} else if (dy != 0) {
+			normDy = if (dy > 0) 1 else -1
+		} else {
+			// Box is at goal - shouldn't happen, but default to EAST
+			normDx = 1
+		}
+		
+		// Push position is opposite to push direction (behind the box, toward goal)
+		// Agent needs to be behind the box to push it toward the goal
+		this.myPushPosition = new Point2i(boxPos.x - normDx, boxPos.y - normDy)
+		System.out.println("[Agent " + getAgentName + "] Calculated push position: " + this.myPushPosition + " (box at " + boxPos + ", goal at " + targetGoal + ")")
+	}
+	
+	/** Recalculate push position based on current box position and target goal.
+	 * 
+	 * This is a wrapper that ensures we always use the most current box position.
+	 * 
+	 * @param currentBoxPosition the current box position (must be up-to-date)
+	 * @param targetGoal the target goal position
+	 */
+	def recalculatePushPosition(currentBoxPosition : Point2i, targetGoal : Point2i) {
+		if (this.activeBoxTask === null || currentBoxPosition === null || targetGoal === null) {
+			return
+		}
+		
+		// Update task with current position first
+		this.activeBoxTask.updateBoxPosition(currentBoxPosition)
+		
+		// Calculate direction from current box position to goal
+		var dx = targetGoal.x - currentBoxPosition.x
+		var dy = targetGoal.y - currentBoxPosition.y
+		
+		// Normalize to unit direction (cardinal only)
+		var normDx = 0
+		var normDy = 0
+		if (Math::abs(dx) > Math::abs(dy)) {
+			normDx = if (dx > 0) 1 else -1
+		} else if (dy != 0) {
+			normDy = if (dy > 0) 1 else -1
+		} else {
+			// Box is at goal - shouldn't happen
+			normDx = 1
+		}
+		
+		// Push position is opposite to push direction (behind the box)
+		this.myPushPosition = new Point2i(currentBoxPosition.x - normDx, currentBoxPosition.y - normDy)
+		System.out.println("[Agent " + getAgentName + "] Recalculated push position: " + this.myPushPosition + " (box at " + currentBoxPosition + ", goal at " + targetGoal + ")")
+	}
+	
+	/** Handle Priority 3: WAITING_FOR_PUSH_SYNC - In position, waiting for others. */
+	def handleWaitingForPushSync(perceivedObjects : List<sokobanObject>) {
+		if (this.activeBoxTask === null) {
+			return
+		}
+		
+		// Broadcast readiness
+		emit(new ReadyForPush(this.activeBoxTask.getBoxId, ID, this.myPosition))
+		
+		// Check if all agents are ready (simplified: if we have at least 1 helper or are leader)
+		var requiredAgents = this.activeBoxTask.getAssignedAgents.size
+		if (this.readyAgents.size >= requiredAgents - 1) {  // All except self
+			// All ready - execute push
+			executeSynchronizedPush(perceivedObjects)
+		} else {
+			// Wait
+			System.out.println("[Agent " + getAgentName + "] Waiting for " + (requiredAgents - this.readyAgents.size - 1) + " more agents")
+		}
+	}
+	
+	/** Execute synchronized push with all agents. */
+	def executeSynchronizedPush(perceivedObjects : List<sokobanObject>) {
+		if (this.activeBoxTask === null) {
+			return
+		}
+		
+		// Find CURRENT box position (box may have moved since task creation)
+		var targetGoal = this.activeBoxTask.getTargetGoal
+		var currentBox : BoxObject = null
+		var currentBoxPosition : Point2i = null
+		
+		// Search for box in perceived objects (might be at different position than stored)
+		for (obj : perceivedObjects) {
+			if (obj instanceof BoxObject) {
+				// Check if this box matches our task (by position proximity or by being the only box)
+				// For now, use the box closest to the stored position
+				var storedBoxPos = this.activeBoxTask.getBoxPosition
+				if (currentBox === null || calculateDistance(obj.position, storedBoxPos) < calculateDistance(currentBoxPosition, storedBoxPos)) {
+					currentBox = obj
+					currentBoxPosition = obj.position
+				}
+			}
+		}
+		
+		// If box not found in perceptions, use stored position
+		if (currentBoxPosition === null) {
+			currentBoxPosition = this.activeBoxTask.getBoxPosition
+		}
+		
+		// Calculate push direction from CURRENT box position to goal (always toward goal)
+		var dx = targetGoal.x - currentBoxPosition.x
+		var dy = targetGoal.y - currentBoxPosition.y
+		
+		// Determine push direction: push box TOWARD goal
+		var pushDirection : Direction
+		if (Math::abs(dx) > Math::abs(dy)) {
+			// Horizontal movement dominates
+			pushDirection = if (dx > 0) Direction::EAST else Direction::WEST
+		} else if (dy != 0) {
+			// Vertical movement dominates
+			pushDirection = if (dy > 0) Direction::SOUTH else Direction::NORTH
+		} else {
+			// Box is at goal (dx=0, dy=0) - shouldn't happen, but default to EAST
+			pushDirection = Direction::EAST
+		}
+		
+		// Store old box position BEFORE push for re-evaluation
+		var oldBoxPosition = currentBoxPosition
+		
+		System.out.println("[Agent " + getAgentName + "] Pushing box at " + currentBoxPosition + " toward goal " + targetGoal + " in direction " + pushDirection)
+		emitAction(pushDirection)  // Push toward goal
+		
+		// CRITICAL: Re-evaluate after push to fix oscillation/loop issues
+		// This verifies box movement, checks distance to goal, and recalculates strategy
+		reEvaluateAfterPush(perceivedObjects, oldBoxPosition)
+		
+		// Check if box moved and verify it reached the goal
+		// Use currentBoxPosition (found above) instead of oldBoxPosition
+		var boxAtOldPos = findObjectAt(perceivedObjects, currentBoxPosition)
+		if (boxAtOldPos === null || !(boxAtOldPos instanceof BoxObject)) {
+			// Box moved from old position - check if it's now on a goal
+			// Calculate new position based on push direction
+			var newBoxX = currentBoxPosition.x
+			var newBoxY = currentBoxPosition.y
+			switch (pushDirection) {
+				case Direction::NORTH: newBoxY--
+				case Direction::SOUTH: newBoxY++
+				case Direction::WEST: newBoxX--
+				case Direction::EAST: newBoxX++
+			}
+			var newBoxPosition = new Point2i(newBoxX, newBoxY)
+			
+			// Check if new position is the target goal (targetGoal already defined above)
+			if (newBoxPosition.equals(targetGoal)) {
+				// Box reached goal - task completed!
+				System.out.println("[Agent " + getAgentName + "] Box reached goal at " + targetGoal + ", task completed!")
+				this.activeBoxTask.markCompleted
+				emit(new BoxTaskCompleted(this.activeBoxTask.getBoxId))
+			} else {
+				// Box moved but not to goal - check if it's on any goal
+				var boxAtNewPos = findObjectAt(perceivedObjects, newBoxPosition)
+				if (boxAtNewPos instanceof BoxObject && (boxAtNewPos as BoxObject).isOnTarget) {
+					// Box is on a goal (maybe different from target) - still consider task done
+					System.out.println("[Agent " + getAgentName + "] Box reached a goal at " + newBoxPosition + ", task completed!")
+					this.activeBoxTask.markCompleted
+					emit(new BoxTaskCompleted(this.activeBoxTask.getBoxId))
+				} else {
+					// Box moved but not to goal - task still active, update box position
+					System.out.println("[Agent " + getAgentName + "] Box moved to " + newBoxPosition + " but not yet at goal " + targetGoal)
+					// Task continues - box position will be updated in next perception
+				}
+			}
+			
+			// Clean up if task completed
+			if (this.activeBoxTask !== null && this.activeBoxTask.isCompleted) {
+				this.activeBoxTask = null
+				this.myTaskRole = null
+				this.myPushPosition = null
+				this.readyAgents.clear
+				this.coordinationState = "EXPLORING"
+				System.out.println("[Agent " + getAgentName + "] Task completed, returning to EXPLORING")
+			}
+		} else {
+			// Box didn't move - push may have failed (blocked)
+			System.out.println("[Agent " + getAgentName + "] Push failed - box still at " + currentBoxPosition)
+		}
+	}
+	
+	/** Handle Priority 4: BOX_TASK_SELECTION - Propose box-clearing task. */
+	def handleBoxTaskSelection(blockingBoxes : List<BoxObject>, perceivedObjects : List<sokobanObject>) {
+		if (blockingBoxes.isEmpty) {
+			return
+		}
+		
+		// Find nearest blocking box
+		var nearestBox : BoxObject = null
+		var minDistance = Integer::MAX_VALUE
+		
+		for (box : blockingBoxes) {
+			var distance = calculateDistance(this.myPosition, box.position)
+			if (distance < minDistance) {
+				minDistance = distance
+				nearestBox = box
+			}
+		}
+		
+		if (nearestBox !== null) {
+			// Find goal for this box
+			var targetGoal = findNearestGoal(nearestBox.position, perceivedObjects)
+			if (targetGoal === null) {
+				System.out.println("[Agent " + getAgentName + "] No available goal found for box at " + nearestBox.position)
+				return
+			}
+			
+			// Calculate push direction (from box to goal)
+			var dx = targetGoal.x - nearestBox.position.x
+			var dy = targetGoal.y - nearestBox.position.y
+			var pushDirection = if (Math::abs(dx) > Math::abs(dy)) {
+				if (dx > 0) Direction::EAST else Direction::WEST
+			} else {
+				if (dy > 0) Direction::SOUTH else Direction::NORTH
+			}
+			
+			// Create box task
+			var boxId = java.util.UUID::randomUUID  // Use UUID as box identifier
+			var task = new BoxTask(boxId, nearestBox.position, targetGoal, ID, pushDirection)
+			task.markActive
+			
+			// Assign self as leader
+			this.activeBoxTask = task
+			this.myTaskRole = "LEADER"
+			calculatePushPosition(perceivedObjects)
+			
+			// Propose task to other agents
+			emit(new ProposeBoxTask(task))
+			System.out.println("[Agent " + getAgentName + "] Proposed box task for box at " + nearestBox.position + " to goal " + targetGoal)
+		}
+	}
+	
+	/** Assign a box to push based on proximity and coordination. */
+	def assignBoxToPush(boxes : List<BoxObject>, perceivedObjects : List<sokobanObject>) {
+		// Find nearest unassigned box
+		var nearestBox : BoxObject = null
+		var minDistance = Integer::MAX_VALUE
+		
+		for (box : boxes) {
+			var distance = calculateDistance(this.myPosition, box.position)
+			// Prefer boxes that are not yet on goals
+			if (!box.isOnTarget && distance < minDistance) {
+				minDistance = distance
+				nearestBox = box
+			}
+		}
+		
+		if (nearestBox !== null) {
+			this.assignedBox = nearestBox.position
+			this.coordinationState = "PUSHING_BOX"
+			System.out.println("[Agent " + getAgentName + "] Assigned to push box at " + this.assignedBox)
+		}
+	}
+	
+	/** Handle assigned box pushing. */
+	def handleAssignedBox(perceivedObjects : List<sokobanObject>) {
+		if (this.assignedBox === null) {
+			this.coordinationState = "EXPLORING"
+			return
+		}
+		
+		var box = findObjectAt(perceivedObjects, this.assignedBox)
+		if (box === null || !(box instanceof BoxObject)) {
+			// Box moved or no longer exists
+			this.assignedBox = null
+			this.coordinationState = "EXPLORING"
+			return
+		}
+		
+		// Move toward box using BFS
+		var direction = calculateDirectionToTarget(this.assignedBox, perceivedObjects)
+		if (direction !== null) {
+			var nextPos = calculateNextPosition(this.myPosition, direction)
+			var blockingObj = findObjectAt(perceivedObjects, nextPos)
+			
+			if (blockingObj instanceof BoxObject && blockingObj.position.equals(this.assignedBox)) {
+				// We're next to our assigned box - push it toward goal using BFS
+				// Direction will be calculated based on goal position (to be updated in Phase 1.3)
+				handleBoxBlocking(blockingObj, direction, this.assignedBox)
+			} else {
+				emitAction(direction)
+			}
+		} else {
+			// BFS failed - try fallback
+			System.out.println("[Agent " + getAgentName + "] BFS failed to find path to assigned box, exploring randomly")
+			exploreRandomly
+		}
+	}
+	
+	/** Handle helping mode - go to help another agent. */
+	def handleHelpingMode(perceivedObjects : List<sokobanObject>) {
+		if (this.helpingAgent === null) {
+			this.coordinationState = "EXPLORING"
+			return
+		}
+		
+		// Find the help request position (we stored it when we offered help)
+		// For now, move toward any box that needs help using BFS
+		var boxes = findBoxes(perceivedObjects)
+		if (!boxes.isEmpty) {
+			var nearestBox = boxes.get(0)
+			var direction = calculateDirectionToTarget(nearestBox.position, perceivedObjects)
+			if (direction !== null) {
+				emitAction(direction)
+			} else {
+				// BFS failed - try fallback
+				System.out.println("[Agent " + getAgentName + "] BFS failed to find path to help location, exploring randomly")
+				exploreRandomly
+			}
+		} else {
+			// No boxes visible, return to exploring
+			this.coordinationState = "EXPLORING"
+			this.helpingAgent = null
+		}
+	}
+	
+	/** Handle waiting for help. */
+	def handleWaitingForHelp(perceivedObjects : List<sokobanObject>) {
+		// Wait a bit, then check if help arrived
+		if (!this.helpOffers.isEmpty) {
+			// Help arrived! Coordinate push
+			this.waitingForHelp = false
+			this.coordinationState = "PUSHING_BOX"
+			System.out.println("[Agent " + getAgentName + "] Help arrived from " + this.helpOffers.size + " agent(s), coordinating push")
+			// Clear help offers
+			this.helpOffers.clear
+		} else {
+			// Still waiting - try to push alone or explore nearby
+			if (this.assignedBox !== null) {
+				var box = findObjectAt(perceivedObjects, this.assignedBox)
+				if (box instanceof BoxObject) {
+					// Try pushing anyway - direction will be calculated based on goal (Phase 1.3)
+					exploreRandomly
+				}
+			}
+		}
+	}
+	
+	/** Explore randomly when no target. */
+	def exploreRandomly {
+		val directions = #[Direction::NORTH, Direction::SOUTH, Direction::EAST, Direction::WEST]
+		var dir = directions.get(this.random.nextInt(directions.size))
+		System.out.println("[Agent " + getAgentName + "] Exploring randomly in direction: " + dir)
+		emitAction(dir)
+	}
+	
+	/** Handle Phase 1: Exploration phase - record discoveries and emit events, never push boxes. */
+	def handleExplorationPhase(perceivedObjects : List<sokobanObject>) {
+		// Scan perceptions for boxes
+		// Note: Exits are no longer objects - they're provided via InitialKnowledge event
+		for (obj : perceivedObjects) {
+			if (obj instanceof BoxObject) {
+				var boxPos = obj.position
+				// Record locally if not already known
+				if (!this.discoveredBoxes.contains(boxPos)) {
+					this.discoveredBoxes.add(boxPos)
+					System.out.println("[Agent " + getAgentName + "] Discovered box at " + boxPos)
+					// Emit discovery event to share with other agents
+					emit(new BoxDiscovered(boxPos, ID))
+				}
+			}
+			// Exits are cell properties, not objects, so they don't appear in perceptions
+			// All exit positions are provided via InitialKnowledge event
+		}
+		
+		// During exploration phase, agents move randomly or toward unexplored areas
+		// Never push boxes during this phase
+		exploreRandomly
+	}
+	
+	/** Check and perform phase transitions based on knowledge availability. */
+	def checkPhaseTransition {
+		// Transition from EXPLORING to CONVERGED when:
+		// - At least one box is known globally
+		// - At least one exit is known globally
+		if (this.systemPhase == "EXPLORING") {
+			if (!this.globalBoxKnowledge.isEmpty && !this.globalExitKnowledge.isEmpty) {
+				this.systemPhase = "CONVERGED"
+				System.out.println("[Agent " + getAgentName + "] Phase transition: EXPLORING -> CONVERGED (boxes: " + this.globalBoxKnowledge.size + ", exits: " + this.globalExitKnowledge.size + ")")
+			}
+		}
+	}
+	
+	/** Calculate distance between two points. */
+	def calculateDistance(p1 : Point2i, p2 : Point2i) : int {
+		if (p1 === null || p2 === null) {
+			return Integer::MAX_VALUE
+		}
+		var dx = p1.x - p2.x
+		var dy = p1.y - p2.y
+		return Math::abs(dx) + Math::abs(dy)
+	}
+	
+	/** Handle help requests from other agents. */
+	on RequestHelp [!occurrence.requesterId.equals(ID)] {
+		System.out.println("[Agent " + getAgentName + "] Received help request from " + occurrence.requesterId + " for box at " + occurrence.boxPosition)
+		
+		// Only help if we're not already busy with our own task
+		// Priority: helping others is lower than our own exit goal
+		var helpPos = occurrence.boxPosition
+		var distance = calculateDistance(this.myPosition, helpPos)
+		
+		// Offer help if:
+		// 1. We're close enough (within 5 cells)
+		// 2. We're not already helping someone
+		// 3. We're not at exit waiting
+		// 4. We don't have a critical assigned box
+		var shouldHelp = distance <= 5 && 
+			this.helpingAgent === null && 
+			// Removed WAITING_AT_EXIT state check
+			(this.assignedBox === null || calculateDistance(this.myPosition, this.assignedBox) > distance)
+		
+		if (shouldHelp) {
+			this.helpingAgent = occurrence.requesterId
+			this.coordinationState = "HELPING"
+			emit(new OfferHelp(ID, helpPos, "I'm coming to help push that box"))
+			System.out.println("[Agent " + getAgentName + "] Offering help to " + occurrence.requesterId)
+		} else {
+			System.out.println("[Agent " + getAgentName + "] Cannot help (distance=" + distance + ", state=" + this.coordinationState + ")")
+		}
+	}
+	
+	/** Handle help offers from other agents. */
+	on OfferHelp {
+		if (this.waitingForHelp && occurrence.targetPosition.equals(this.assignedBox)) {
+			this.helpOffers.add(occurrence.helperId)
+			System.out.println("[Agent " + getAgentName + "] Received help offer from " + occurrence.helperId)
+			
+			// Coordinate the push
+			// Note: This is in an event handler, so we don't have current perceptions
+			// The actual push direction will be calculated in the next perception cycle
+			if (this.assignedBox !== null) {
+				// Use default direction - will be updated to use goal position (Phase 1.3)
+				emit(new CoordinatePush(ID, this.assignedBox, Direction::NORTH, true))
+				System.out.println("[Agent " + getAgentName + "] Coordinating push with " + occurrence.helperId)
+			}
+		}
+	}
+	
+	/** Handle coordinated push requests. */
+	on CoordinatePush [!occurrence.coordinatorId.equals(ID)] {
+		if (this.helpingAgent !== null && occurrence.coordinatorId.equals(this.helpingAgent)) {
+			if (occurrence.ready) {
+				// Coordinator is ready, move to help position and push together using BFS
+				// Note: We need perceivedObjects here, but we don't have access in event handler
+				// Use greedy fallback for now (this is a coordination event, not a perception event)
+				var direction = calculateDirectionToTargetGreedy(occurrence.boxPosition)
+				if (direction !== null) {
+					emitAction(direction)
+				}
+			}
+		}
+	}
+	
+	/** Handle box task proposals from other agents. */
+	on ProposeBoxTask [!occurrence.task.leaderId.equals(ID)] {
+		var task = occurrence.task
+		
+		// Accept task if we're not busy and close enough
+		if (this.activeBoxTask === null) {
+			var distance = calculateDistance(this.myPosition, task.getBoxPosition)
+			if (distance <= 10) {  // Within reasonable distance
+				// Accept task as helper
+				this.activeBoxTask = task
+				this.myTaskRole = "HELPER"
+				task.addHelper(ID)
+				// Ensure task is marked as ACTIVE when we accept it
+				if (!task.isActive) {
+					task.markActive
+				}
+				// Push position will be calculated on next perception
+				emit(new AcceptBoxTask(task.getBoxId, ID))
+				System.out.println("[Agent " + getAgentName + "] Accepted box task from " + task.leaderId + ", taskState=" + task.getTaskState)
+			}
+		}
+	}
+	
+	/** Handle task acceptance from helper agents. */
+	on AcceptBoxTask {
+		if (this.activeBoxTask !== null && occurrence.taskId.equals(this.activeBoxTask.getBoxId)) {
+			this.activeBoxTask.addHelper(occurrence.agentId)
+			System.out.println("[Agent " + getAgentName + "] Helper " + occurrence.agentId + " accepted task")
+		}
+	}
+	
+	/** Handle readiness signals from other agents. */
+	on ReadyForPush {
+		if (this.activeBoxTask !== null && occurrence.taskId.equals(this.activeBoxTask.getBoxId)) {
+			if (!this.readyAgents.contains(occurrence.agentId)) {
+				this.readyAgents.add(occurrence.agentId)
+				System.out.println("[Agent " + getAgentName + "] Agent " + occurrence.agentId + " is ready for push")
+			}
+		}
+	}
+	
+	/** Handle task completion. */
+	on BoxTaskCompleted {
+		if (this.activeBoxTask !== null && occurrence.taskId.equals(this.activeBoxTask.getBoxId)) {
+			// Task completed - release commitment
+			System.out.println("[Agent " + getAgentName + "] Task completed event received for task " + occurrence.taskId + ", releasing commitment")
+			this.activeBoxTask = null
+			this.myTaskRole = null
+			this.myPushPosition = null
+			this.readyAgents.clear
+			this.coordinationState = "EXPLORING"
+			System.out.println("[Agent " + getAgentName + "] Task completed, returning to EXPLORING")
+		}
+	}
+	
+	/** Handle agent position broadcasts for blocking detection. */
+	on AgentPositionBroadcast [!occurrence.agentId.equals(ID)] {
+		// Update other agent's position, target, and phase
+		this.otherAgentPositions.put(occurrence.agentId, occurrence.position)
+		this.otherAgentPhases.put(occurrence.agentId, occurrence.phase)  // Track phase for conflict detection
+		if (occurrence.targetBox !== null) {
+			this.otherAgentTargets.put(occurrence.agentId, occurrence.targetBox)
+		} else {
+			this.otherAgentTargets.remove(occurrence.agentId)
+		}
+	}
+	
+	/** Handle box position updates from other agents. */
+	on BoxPositionUpdate {
+		// Update global knowledge when box is moved by another agent
+		if (this.allBoxPositions.contains(occurrence.oldPosition)) {
+			this.allBoxPositions.remove(occurrence.oldPosition)
+			this.allBoxPositions.add(occurrence.newPosition)
+			System.out.println("[Agent " + getAgentName + "] Updated global knowledge: box moved from " + occurrence.oldPosition + " to " + occurrence.newPosition)
+		}
+		
+		// If this is our claimed box, update it
+		if (this.myClaimedBox !== null && this.myClaimedBox.x == occurrence.oldPosition.x && this.myClaimedBox.y == occurrence.oldPosition.y) {
+			this.myClaimedBox = occurrence.newPosition
+			System.out.println("[Agent " + getAgentName + "] Updated claimed box position to " + occurrence.newPosition)
+			
+			// CRITICAL FIX: Update claimedBoxes set to reflect new position
+			this.claimedBoxes.remove(occurrence.oldPosition)
+			this.claimedBoxes.add(occurrence.newPosition)
+			System.out.println("[Agent " + getAgentName + "] Updated claimedBoxes: removed " + occurrence.oldPosition + ", added " + occurrence.newPosition)
+		}
+		
+		// FIX 2: Also update claimedBoxes if the old position is in claimedBoxes (even if not our claimed box)
+		// This handles cases where another agent's claimed box moved
+		if (this.claimedBoxes.contains(occurrence.oldPosition)) {
+			this.claimedBoxes.remove(occurrence.oldPosition)
+			if (!this.claimedBoxes.contains(occurrence.newPosition)) {
+				this.claimedBoxes.add(occurrence.newPosition)
+			}
+			System.out.println("[Agent " + getAgentName + "] Updated claimedBoxes for moved box: " + occurrence.oldPosition + " -> " + occurrence.newPosition)
+		}
+	}
+	
+	/** Handle box discovery events from other agents. */
+	on BoxDiscovered [!occurrence.discovererId.equals(ID)] {
+		var boxPos = occurrence.boxPosition
+		if (!this.allBoxPositions.contains(boxPos)) {
+			this.globalBoxKnowledge.add(boxPos)
+			System.out.println("[Agent " + getAgentName + "] Received BoxDiscovered from " + occurrence.discovererId + " at " + boxPos + " (global boxes: " + this.globalBoxKnowledge.size + ")")
+			// Check if phase transition is now possible
+			checkPhaseTransition
+		}
+	}
+	
+	/** Handle exit discovery events from other agents. */
+	on ExitDiscovered [!occurrence.discovererId.equals(ID)] {
+		var exitPos = occurrence.exitPosition
+		if (!this.globalExitKnowledge.contains(exitPos)) {
+			this.globalExitKnowledge.add(exitPos)
+			System.out.println("[Agent " + getAgentName + "] Received ExitDiscovered from " + occurrence.discovererId + " at " + exitPos + " (global exits: " + this.globalExitKnowledge.size + ")")
+			// Check if phase transition is now possible
+			checkPhaseTransition
+		}
+	}
+	
+}
+

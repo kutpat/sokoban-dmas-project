@@ -1,0 +1,160 @@
+/* 
+ * BoxTask structure for tracking box-clearing tasks.
+ * 
+ * Represents a coordinated task to move a box to a clearing point.
+ */
+package sokoban.environment.^agent
+
+import framework.math.Point2i
+import java.io.Serializable
+import java.util.List
+import java.util.ArrayList
+import java.util.UUID
+
+/**
+ * Represents a box task with assigned agents and target goal.
+ * Boxes are pushed TO goals (exits), not to clearing points.
+ */
+class BoxTask implements Serializable {
+	
+	val boxId : UUID  // Unique identifier for the box (using position as ID)
+	var boxPosition : Point2i  // Mutable: box position changes as it moves
+	val targetGoal : Point2i  // Goal cell (exit) to push box to
+	val leaderId : UUID  // Agent leading the task
+	val assignedAgents : List<UUID>  // All agents assigned to this task
+	var taskState : String  // "PROPOSED", "ACTIVE", "COMPLETED" - mutable to allow state changes
+	val pushDirection : sokoban.environment.maze.Direction  // Direction to push box
+	
+	new (boxId : UUID, boxPosition : Point2i, targetGoal : Point2i, leaderId : UUID, pushDirection : sokoban.environment.maze.Direction) {
+		this.boxId = boxId
+		this.boxPosition = boxPosition
+		this.targetGoal = targetGoal
+		this.leaderId = leaderId
+		this.pushDirection = pushDirection
+		this.assignedAgents = new ArrayList<UUID>
+		this.assignedAgents.add(leaderId)
+		this.taskState = "PROPOSED"
+	}
+	
+	def addHelper(agentId : UUID) {
+		if (!this.assignedAgents.contains(agentId)) {
+			this.assignedAgents.add(agentId)
+		}
+	}
+	
+	def isActive : boolean {
+		this.taskState == "ACTIVE"
+	}
+	
+	def isCompleted : boolean {
+		this.taskState == "COMPLETED"
+	}
+	
+	def markActive {
+		this.taskState = "ACTIVE"
+	}
+	
+	def markCompleted {
+		this.taskState = "COMPLETED"
+	}
+	
+	/** Get the box position. */
+	def getBoxPosition : Point2i {
+		this.boxPosition
+	}
+	
+	/** Get the target goal. */
+	def getTargetGoal : Point2i {
+		this.targetGoal
+	}
+	
+	/** Legacy method for compatibility - returns targetGoal. */
+	def getTargetClearingCell : Point2i {
+		this.targetGoal
+	}
+	
+	/** Get the box ID. */
+	def getBoxId : UUID {
+		this.boxId
+	}
+	
+	/** Get the assigned agents list. */
+	def getAssignedAgents : List<UUID> {
+		this.assignedAgents
+	}
+	
+	/** Get the task state. */
+	def getTaskState : String {
+		this.taskState
+	}
+	
+	/** Get the push direction. */
+	def getPushDirection : sokoban.environment.maze.Direction {
+		this.pushDirection
+	}
+	
+	/** Update the box position when box moves. */
+	def updateBoxPosition(newPosition : Point2i) {
+		this.boxPosition = newPosition
+	}
+	
+}
+
+/**
+ * Event to propose a box-clearing task.
+ */
+event ProposeBoxTask extends Event {
+	
+	val task : BoxTask
+	
+	new (task : BoxTask) {
+		this.task = task
+	}
+	
+}
+
+/**
+ * Event to accept a box-clearing task.
+ */
+event AcceptBoxTask extends Event {
+	
+	val taskId : UUID
+	val agentId : UUID
+	
+	new (taskId : UUID, agentId : UUID) {
+		this.taskId = taskId
+		this.agentId = agentId
+	}
+	
+}
+
+/**
+ * Event to announce readiness for synchronized push.
+ */
+event ReadyForPush extends Event {
+	
+	val taskId : UUID
+	val agentId : UUID
+	val position : Point2i
+	
+	new (taskId : UUID, agentId : UUID, position : Point2i) {
+		this.taskId = taskId
+		this.agentId = agentId
+		this.position = position
+	}
+	
+}
+
+/**
+ * Event to signal task completion.
+ */
+event BoxTaskCompleted extends Event {
+	
+	val taskId : UUID
+	
+	new (taskId : UUID) {
+		this.taskId = taskId
+	}
+	
+}
+

@@ -57,4 +57,11 @@ interface EnvironmentListener extends EventListener {
 	 */
 	def gameOver
 
+	/** Get the number of agents to spawn (from dashboard).
+	 * This is called during initialization to determine how many agents to create.
+	 * 
+	 * @return number of agents to spawn (default: 2)
+	 */
+	def getAgentCount : int
+
 }

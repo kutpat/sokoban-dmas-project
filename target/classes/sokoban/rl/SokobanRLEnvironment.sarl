@@ -1,0 +1,226 @@
+/* 
+ * RL-compatible wrapper for Sokoban environment.
+ * 
+ * This class provides the standard RL interface:
+ * - step(action) → (state, reward, done, info)
+ * - reset() → initial state
+ * - getState() → current state
+ * 
+ * Bridges RL frameworks (Python/Java) to the Sokoban environment.
+ */
+package sokoban.rl
+
+import sokoban.environment.^agent.MazeManager
+import sokoban.environment.maze.Direction
+
+/**
+ * RL-compatible wrapper for Sokoban environment.
+ * 
+ * Provides standard RL interface for training:
+ * - step(action) - Execute action and return result
+ * - reset() - Reset to initial state
+ * - getState() - Get current state
+ * 
+ * This wrapper manages:
+ * - Episode state (step count, termination)
+ * - State tracking (previous state for reward calculation)
+ * - Action validation
+ * - Reward computation
+ */
+class SokobanRLEnvironment {
+
+	val mazeManager : MazeManager
+	val maxSteps : int
+	
+	var currentState : SokobanState = null
+	var previousState : SokobanState = null
+	var stepCount : int = 0
+	var episodeDone : boolean = false
+	var initialState : SokobanState = null
+
+	/** Create RL environment wrapper.
+	 * 
+	 * @param mazeManager the maze manager to use
+	 * @param maxSteps maximum steps per episode (0 = no limit)
+	 */
+	new (mazeManager : MazeManager, maxSteps : int) {
+		this.mazeManager = mazeManager
+		this.maxSteps = maxSteps
+	}
+
+	/** Execute an action and return the result.
+	 * 
+	 * @param action integer action: 0=UP, 1=RIGHT, 2=DOWN, 3=LEFT
+	 * @return RLStepResult containing (state, reward, done, info)
+	 */
+	def step(action : int) : RLStepResult {
+		if (this.episodeDone) {
+			// Episode already terminated
+			return new RLStepResult(
+				this.currentState,
+				0.0,
+				true,
+				new RLStepInfo(false, 0, 0, this.stepCount, "Episode already terminated")
+			)
+		}
+
+		// Convert action integer to Direction
+		var direction : Direction = null
+		switch (action) {
+			case 0: direction = Direction::NORTH  // UP
+			case 1: direction = Direction::EAST   // RIGHT
+			case 2: direction = Direction::SOUTH  // DOWN
+			case 3: direction = Direction::WEST   // LEFT
+			default: {
+				// Invalid action
+				var info = new RLStepInfo(
+					false,
+					RewardCalculator.countBoxesOnTargets(this.currentState),
+					this.currentState.boxPositions.size,
+					this.stepCount,
+					"Invalid action: " + action
+				)
+				return new RLStepResult(
+					this.currentState,
+					RewardCalculator.PENALTY_INVALID_MOVE,
+					false,
+					info
+				)
+			}
+		}
+
+		// Save previous state for reward calculation
+		this.previousState = if (this.currentState !== null) this.currentState.copy else null
+
+		// Execute action
+		var actionExecuted = executeAction(direction)
+		
+		// Extract new state after action
+		this.stepCount++
+		var newState = this.mazeManager.extractSokobanState(this.stepCount)
+		
+		// Validate action by checking if state changed
+		// If player position didn't change, action was invalid/blocked
+		var actionValid = actionExecuted
+		if (this.previousState !== null) {
+			var prevPlayerPos = this.previousState.agentPosition
+			var newPlayerPos = newState.agentPosition
+			if (prevPlayerPos.equals(newPlayerPos)) {
+				// Player didn't move - action was blocked (wall, boundary, etc.)
+				actionValid = false
+			}
+		}
+		
+		this.currentState = newState
+
+		// Compute reward
+		var reward = 0.0
+		if (this.previousState !== null) {
+			reward = RewardCalculator.computeReward(this.previousState, this.currentState, actionValid)
+		} else {
+			// First step - just per-step penalty
+			reward = RewardCalculator.PENALTY_PER_STEP
+		}
+
+		// Check termination conditions
+		var done = false
+		var message = ""
+		
+		if (this.currentState.allBoxesOnTargets) {
+			done = true
+			this.episodeDone = true
+			message = "All boxes on targets - Puzzle solved!"
+			reward += RewardCalculator.REWARD_ALL_BOXES_ON_TARGETS
+		} else if (this.maxSteps > 0 && this.stepCount >= this.maxSteps) {
+			done = true
+			this.episodeDone = true
+			message = "Maximum steps reached"
+		}
+
+		// Create info
+		var info = new RLStepInfo(
+			actionValid,
+			RewardCalculator.countBoxesOnTargets(this.currentState),
+			this.currentState.boxPositions.size,
+			this.stepCount,
+			message
+		)
+
+		return new RLStepResult(this.currentState, reward, done, info)
+	}
+
+	/** Execute an action in the environment.
+	 * 
+	 * @param direction the direction to move
+	 * @return true if action was valid and executed
+	 */
+	private def executeAction(direction : Direction) : boolean {
+		// Execute movement through MazeManager
+		return this.mazeManager.executePlayerAction(direction)
+	}
+
+	/** Reset the environment to initial state.
+	 * 
+	 * @return initial SokobanState
+	 */
+	def reset : SokobanState {
+		// Reset episode state
+		this.stepCount = 0
+		this.episodeDone = false
+		this.previousState = null
+
+		// TODO: Reset the actual maze state
+		// This would require:
+		// 1. Saving initial state when first created
+		// 2. Restoring boxes to initial positions
+		// 3. Restoring player to initial position
+		// For now, extract current state as initial
+		
+		this.currentState = this.mazeManager.extractSokobanState(0)
+		this.initialState = this.currentState.copy
+		
+		return this.currentState
+	}
+
+	/** Get current state without executing an action.
+	 * 
+	 * @return current SokobanState
+	 */
+	@Pure
+	def getState : SokobanState {
+		if (this.currentState === null) {
+			// Extract initial state if not set
+			this.currentState = this.mazeManager.extractSokobanState(this.stepCount)
+		}
+		return this.currentState
+	}
+
+	/** Check if episode is done.
+	 * 
+	 * @return true if episode terminated
+	 */
+	@Pure
+	def isDone : boolean {
+		this.episodeDone
+	}
+
+	/** Get current step count.
+	 * 
+	 * @return current step count
+	 */
+	@Pure
+	def getStepCount : int {
+		this.stepCount
+	}
+
+	/** Get maximum steps per episode.
+	 * 
+	 * @return max steps (0 = no limit)
+	 */
+	@Pure
+	def getMaxSteps : int {
+		this.maxSteps
+	}
+
+}
+

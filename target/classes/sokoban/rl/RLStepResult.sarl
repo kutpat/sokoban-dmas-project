@@ -1,0 +1,103 @@
+/* 
+ * Result of a step in the RL Sokoban environment.
+ * 
+ * This class encapsulates the standard RL step return value:
+ * (state, reward, done, info)
+ */
+package sokoban.rl
+
+import java.io.Serializable
+
+/**
+ * Result of a step in the RL Sokoban environment.
+ * 
+ * Standard RL interface return value:
+ * - state: Current state after action
+ * - reward: Reward for this step
+ * - done: Whether episode terminated
+ * - info: Additional information (optional)
+ */
+class RLStepResult implements Serializable {
+
+	val state : SokobanState
+	val reward : double
+	val done : boolean
+	val info : RLStepInfo
+
+	new (state : SokobanState, reward : double, done : boolean, info : RLStepInfo) {
+		this.state = state
+		this.reward = reward
+		this.done = done
+		this.info = info
+	}
+
+	def getState : SokobanState {
+		this.state
+	}
+
+	def getReward : double {
+		this.reward
+	}
+
+	def isDone : boolean {
+		this.done
+	}
+
+	def getInfo : RLStepInfo {
+		this.info
+	}
+
+}
+
+/**
+ * Additional information about a step.
+ */
+class RLStepInfo implements Serializable {
+
+	val actionValid : boolean
+	val boxesOnTargets : int
+	val totalBoxes : int
+	val stepCount : int
+	val message : String
+
+	new (
+		actionValid : boolean,
+		boxesOnTargets : int,
+		totalBoxes : int,
+		stepCount : int,
+		message : String
+	) {
+		this.actionValid = actionValid
+		this.boxesOnTargets = boxesOnTargets
+		this.totalBoxes = totalBoxes
+		this.stepCount = stepCount
+		this.message = message
+	}
+
+	def getActionValid : boolean {
+		this.actionValid
+	}
+
+	def getBoxesOnTargets : int {
+		this.boxesOnTargets
+	}
+
+	def getTotalBoxes : int {
+		this.totalBoxes
+	}
+
+	def getStepCount : int {
+		this.stepCount
+	}
+
+	def getMessage : String {
+		this.message
+	}
+
+}
+
+
+
+
+
+

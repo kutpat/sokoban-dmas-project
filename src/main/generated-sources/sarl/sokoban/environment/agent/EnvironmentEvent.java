@@ -26,6 +26,7 @@ import io.sarl.lang.core.annotation.SarlSpecification;
 import io.sarl.lang.core.annotation.SyntheticMember;
 import java.util.EventObject;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.eclipse.xtext.xbase.lib.Pure;
 import org.eclipse.xtext.xbase.lib.XbaseGenerated;
@@ -52,12 +53,18 @@ public class EnvironmentEvent extends EventObject {
 
   private final Map<Point2i, sokobanObject> objects;
 
-  public EnvironmentEvent(final UUID source, final int time, final int width, final int height, final Map<Point2i, sokobanObject> objects) {
+  /**
+   * Exit positions (cell properties, not objects).
+   */
+  private final Set<Point2i> exitPositions;
+
+  public EnvironmentEvent(final UUID source, final int time, final int width, final int height, final Map<Point2i, sokobanObject> objects, final Set<Point2i> exitPositions) {
     super(source);
     this.time = time;
     this.width = width;
     this.height = height;
     this.objects = objects;
+    this.exitPositions = exitPositions;
   }
 
   @Pure
@@ -78,6 +85,11 @@ public class EnvironmentEvent extends EventObject {
   @Pure
   public Map<Point2i, sokobanObject> getObjects() {
     return this.objects;
+  }
+
+  @Pure
+  public Set<Point2i> getExitPositions() {
+    return this.exitPositions;
   }
 
   @Override
@@ -113,5 +125,5 @@ public class EnvironmentEvent extends EventObject {
   }
 
   @SyntheticMember
-  private static final long serialVersionUID = -32792779L;
+  private static final long serialVersionUID = 2120623936L;
 }

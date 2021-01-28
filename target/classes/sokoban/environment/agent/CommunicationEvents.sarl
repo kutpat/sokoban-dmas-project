@@ -1,0 +1,93 @@
+/* 
+ * Communication events for agent coordination.
+ * 
+ * Agents use these events to coordinate box pushing and movement.
+ */
+package sokoban.environment.^agent
+
+import io.sarl.lang.core.Event
+import framework.math.Point2i
+import sokoban.environment.maze.Direction
+
+/**
+ * Event to request help pushing a box.
+ * 
+ * An agent sends this when it needs another agent's help
+ * to push a box that requires coordination.
+ */
+event RequestHelp extends Event {
+	
+	val requesterId : java.util.UUID
+	val boxPosition : Point2i
+	val pushDirection : Direction
+	val message : String
+	
+	new (requesterId : java.util.UUID, boxPosition : Point2i, pushDirection : Direction, message : String) {
+		this.requesterId = requesterId
+		this.boxPosition = boxPosition
+		this.pushDirection = pushDirection
+		this.message = message
+	}
+	
+}
+
+/**
+ * Event to offer help to another agent.
+ * 
+ * An agent sends this to indicate it can help with a task.
+ */
+event OfferHelp extends Event {
+	
+	val helperId : java.util.UUID
+	val targetPosition : Point2i
+	val message : String
+	
+	new (helperId : java.util.UUID, targetPosition : Point2i, message : String) {
+		this.helperId = helperId
+		this.targetPosition = targetPosition
+		this.message = message
+	}
+	
+}
+
+/**
+ * Event to coordinate box pushing.
+ * 
+ * Agents use this to coordinate simultaneous box pushes.
+ */
+event CoordinatePush extends Event {
+	
+	val coordinatorId : java.util.UUID
+	val boxPosition : Point2i
+	val pushDirection : Direction
+	val ready : boolean
+	
+	new (coordinatorId : java.util.UUID, boxPosition : Point2i, pushDirection : Direction, ready : boolean) {
+		this.coordinatorId = coordinatorId
+		this.boxPosition = boxPosition
+		this.pushDirection = pushDirection
+		this.ready = ready
+	}
+	
+}
+
+/**
+ * Event to announce agent reached exit.
+ */
+event AgentReachedExit extends Event {
+	
+	val agentId : java.util.UUID
+	val exitPosition : Point2i
+	
+	new (agentId : java.util.UUID, exitPosition : Point2i) {
+		this.agentId = agentId
+		this.exitPosition = exitPosition
+	}
+	
+}
+
+
+
+
+
+

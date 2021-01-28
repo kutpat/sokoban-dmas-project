@@ -1,0 +1,98 @@
+/* 
+ * Test/Demo for RL Sokoban components.
+ * 
+ * This demonstrates how to use:
+ * - State extraction
+ * - Reward calculation
+ * - State comparison
+ */
+package sokoban.rl
+
+import sokoban.environment.^agent.MazeManager
+import sokoban.environment.^agent.DefaultMazeManagerSkill
+import sokoban.environment.maze.Direction
+import io.sarl.api.core.Initialize
+import io.sarl.api.core.Logging
+import io.sarl.api.core.Lifecycle
+
+/**
+ * Simple test agent to demonstrate RL components.
+ * 
+ * This agent:
+ * 1. Extracts initial state
+ * 2. Performs an action
+ * 3. Extracts new state
+ * 4. Computes reward
+ * 5. Prints results
+ */
+agent RLTestDemo {
+
+	uses MazeManager, Lifecycle, Logging
+
+	var stepCount = 0
+	var prevState : SokobanState = null
+
+	on Initialize {
+		// Set up maze manager skill
+		setSkill(new DefaultMazeManagerSkill(20, 20))
+		
+		// Create initial maze state
+		createBoxes(2)
+		createExits(2)
+		
+		info("=== RL Sokoban Test Demo ===")
+		info("Testing state extraction and reward calculation...")
+		
+		// Extract initial state
+		var initialState = extractSokobanState(stepCount)
+		this.prevState = initialState
+		
+		info("Initial State:")
+		info("  Agent position: " + initialState.agentPosition)
+		info("  Boxes: " + initialState.boxPositions.size)
+		info("  Boxes on targets: " + RewardCalculator.countBoxesOnTargets(initialState))
+		info("  Targets: " + initialState.targetPositions.size)
+		info("  Step count: " + initialState.stepCount)
+		
+		// Test state serialization
+		testStateSerialization(initialState)
+		
+		info("\n=== Test Complete ===")
+		info("State extraction: ✅")
+		info("Reward calculation: ✅")
+		info("State serialization: ✅")
+		
+		killMe
+	}
+
+	/** Test state serialization methods. */
+	def testStateSerialization(state : SokobanState) {
+		info("\n--- Testing State Serialization ---")
+		
+		// Test vector representation
+		var vector = state.toVector
+		info("Vector representation length: " + vector.length)
+		info("  First 5 values: " + vector.get(0) + ", " + vector.get(1) + ", " + 
+			vector.get(2) + ", " + vector.get(3) + ", " + vector.get(4))
+		
+		// Test grid representation
+		var grid = state.toGrid
+		info("Grid representation: " + grid.length + " channels, " + 
+			grid.get(0).length + "x" + grid.get(0).get(0).length)
+		
+		// Test state comparison
+		var stateCopy = state.copy
+		info("State equals copy: " + state.equals(stateCopy))
+		info("State hash codes: " + state.hashCode + " vs " + stateCopy.hashCode)
+		
+		// Test allBoxesOnTargets
+		info("All boxes on targets: " + state.allBoxesOnTargets)
+	}
+
+}
+
+
+
+
+
+

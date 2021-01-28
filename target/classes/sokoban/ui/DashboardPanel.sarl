@@ -1,0 +1,206 @@
+/* 
+ * Dashboard panel for Sokoban simulator.
+ * 
+ * Displays:
+ * - Agent count selector (before simulation starts)
+ * - Boxes on targets count
+ * - Agents at exit count
+ * - Step count / time
+ */
+package sokoban.ui
+
+import java.awt.BorderLayout
+import java.awt.Color
+import java.awt.Dimension
+import java.awt.Font
+import java.awt.GridLayout
+import javax.swing.BorderFactory
+import javax.swing.BoxLayout
+import javax.swing.JLabel
+import javax.swing.JPanel
+import javax.swing.JSpinner
+import javax.swing.SpinnerNumberModel
+import javax.swing.SwingConstants
+
+/**
+ * Dashboard panel showing game statistics and controls.
+ */
+class DashboardPanel extends JPanel {
+
+	val agentCountSpinner : JSpinner
+	val boxesOnTargetsLabel : JLabel
+	val totalBoxesLabel : JLabel
+	val agentsAtExitLabel : JLabel
+	val totalAgentsLabel : JLabel
+	val stepCountLabel : JLabel
+	val timeLabel : JLabel
+
+	new {
+		this.layout = new BorderLayout
+		this.border = BorderFactory.createTitledBorder("Dashboard")
+		
+		// Left panel: Controls (agent count selector)
+		var controlsPanel = new JPanel
+		controlsPanel.layout = new BoxLayout(controlsPanel, BoxLayout::Y_AXIS)
+		controlsPanel.border = BorderFactory.createTitledBorder("Settings")
+		
+		var agentCountPanel = new JPanel
+		agentCountPanel.layout = new BorderLayout
+		var agentCountLabel = new JLabel("Number of Agents:")
+		agentCountLabel.font = new Font("Arial", Font::PLAIN, 12)
+		var spinnerModel = new SpinnerNumberModel(2, 1, 6, 1)  // Default: 2, Min: 1, Max: 6, Step: 1
+		this.agentCountSpinner = new JSpinner(spinnerModel)
+		this.agentCountSpinner.preferredSize = new Dimension(60, 25)
+		agentCountPanel.add(BorderLayout::WEST, agentCountLabel)
+		agentCountPanel.add(BorderLayout::CENTER, this.agentCountSpinner)
+		controlsPanel.add(agentCountPanel)
+		
+		this.add(BorderLayout::WEST, controlsPanel)
+		
+		// Right panel: Statistics
+		var statsPanel = new JPanel
+		statsPanel.layout = new GridLayout(0, 2, 10, 5)
+		statsPanel.border = BorderFactory.createTitledBorder("Statistics")
+		
+		// Box statistics
+		var boxesLabel = new JLabel("Boxes on Targets:")
+		boxesLabel.font = new Font("Arial", Font::BOLD, 12)
+		this.boxesOnTargetsLabel = new JLabel("0")
+		this.boxesOnTargetsLabel.font = new Font("Arial", Font::PLAIN, 12)
+		this.boxesOnTargetsLabel.foreground = Color::GREEN
+		this.boxesOnTargetsLabel.horizontalAlignment = SwingConstants::RIGHT
+		
+		var totalBoxesLabelText = new JLabel("Total Boxes:")
+		totalBoxesLabelText.font = new Font("Arial", Font::BOLD, 12)
+		this.totalBoxesLabel = new JLabel("0")
+		this.totalBoxesLabel.font = new Font("Arial", Font::PLAIN, 12)
+		this.totalBoxesLabel.horizontalAlignment = SwingConstants::RIGHT
+		
+		// Agent statistics
+		var agentsLabel = new JLabel("Agents at Exit:")
+		agentsLabel.font = new Font("Arial", Font::BOLD, 12)
+		this.agentsAtExitLabel = new JLabel("0")
+		this.agentsAtExitLabel.font = new Font("Arial", Font::PLAIN, 12)
+		this.agentsAtExitLabel.foreground = Color::BLUE
+		this.agentsAtExitLabel.horizontalAlignment = SwingConstants::RIGHT
+		
+		var totalAgentsLabelText = new JLabel("Total Agents:")
+		totalAgentsLabelText.font = new Font("Arial", Font::BOLD, 12)
+		this.totalAgentsLabel = new JLabel("0")
+		this.totalAgentsLabel.font = new Font("Arial", Font::PLAIN, 12)
+		this.totalAgentsLabel.horizontalAlignment = SwingConstants::RIGHT
+		
+		// Time/Step statistics
+		var stepLabel = new JLabel("Step Count:")
+		stepLabel.font = new Font("Arial", Font::BOLD, 12)
+		this.stepCountLabel = new JLabel("0")
+		this.stepCountLabel.font = new Font("Arial", Font::PLAIN, 12)
+		this.stepCountLabel.horizontalAlignment = SwingConstants::RIGHT
+		
+		var timeLabelText = new JLabel("Time:")
+		timeLabelText.font = new Font("Arial", Font::BOLD, 12)
+		this.timeLabel = new JLabel("0")
+		this.timeLabel.font = new Font("Arial", Font::PLAIN, 12)
+		this.timeLabel.horizontalAlignment = SwingConstants::RIGHT
+		
+		// Add all labels to stats panel
+		statsPanel.add(boxesLabel)
+		statsPanel.add(this.boxesOnTargetsLabel)
+		statsPanel.add(totalBoxesLabelText)
+		statsPanel.add(this.totalBoxesLabel)
+		statsPanel.add(agentsLabel)
+		statsPanel.add(this.agentsAtExitLabel)
+		statsPanel.add(totalAgentsLabelText)
+		statsPanel.add(this.totalAgentsLabel)
+		statsPanel.add(stepLabel)
+		statsPanel.add(this.stepCountLabel)
+		statsPanel.add(timeLabelText)
+		statsPanel.add(this.timeLabel)
+		
+		this.add(BorderLayout::CENTER, statsPanel)
+		
+		// Set preferred size
+		this.preferredSize = new Dimension(400, 150)
+	}
+
+	/** Get the selected number of agents.
+	 * 
+	 * @return number of agents selected
+	 */
+	def getAgentCount : int {
+		var count = (this.agentCountSpinner.value as Integer).intValue
+		System.out.println("[Dashboard] Spinner value: " + count)
+		return count
+	}
+
+	/** Set the number of agents (for display).
+	 * 
+	 * @param count number of agents
+	 */
+	def setAgentCount(count : int) : void {
+		this.agentCountSpinner.value = count
+	}
+
+	/** Enable or disable the agent count selector.
+	 * 
+	 * @param enabled true to enable, false to disable
+	 */
+	def setAgentCountEnabled(enabled : boolean) : void {
+		this.agentCountSpinner.enabled = enabled
+	}
+
+	/** Update box statistics.
+	 * 
+	 * @param boxesOnTargets number of boxes currently on target cells
+	 * @param totalBoxes total number of boxes
+	 */
+	def updateBoxStats(boxesOnTargets : int, totalBoxes : int) : void {
+		this.boxesOnTargetsLabel.text = boxesOnTargets.toString + " / " + totalBoxes.toString
+		if (boxesOnTargets == totalBoxes && totalBoxes > 0) {
+			this.boxesOnTargetsLabel.foreground = Color::GREEN
+		} else {
+			this.boxesOnTargetsLabel.foreground = Color::ORANGE
+		}
+		this.totalBoxesLabel.text = totalBoxes.toString
+	}
+
+	/** Update agent statistics.
+	 * 
+	 * @param agentsAtExit number of agents currently at exit positions
+	 * @param totalAgents total number of agents
+	 */
+	def updateAgentStats(agentsAtExit : int, totalAgents : int) : void {
+		this.agentsAtExitLabel.text = agentsAtExit.toString + " / " + totalAgents.toString
+		if (agentsAtExit == totalAgents && totalAgents > 0) {
+			this.agentsAtExitLabel.foreground = Color::GREEN
+		} else {
+			this.agentsAtExitLabel.foreground = Color::BLUE
+		}
+		this.totalAgentsLabel.text = totalAgents.toString
+	}
+
+	/** Update step count and time.
+	 * 
+	 * @param stepCount current step count
+	 * @param time current time
+	 */
+	def updateTimeStats(stepCount : int, time : int) : void {
+		this.stepCountLabel.text = stepCount.toString
+		this.timeLabel.text = time.toString
+	}
+
+	/** Reset all statistics to zero.
+	 */
+	def resetStats : void {
+		this.boxesOnTargetsLabel.text = "0"
+		this.totalBoxesLabel.text = "0"
+		this.agentsAtExitLabel.text = "0"
+		this.totalAgentsLabel.text = "0"
+		this.stepCountLabel.text = "0"
+		this.timeLabel.text = "0"
+		this.boxesOnTargetsLabel.foreground = Color::GREEN
+		this.agentsAtExitLabel.foreground = Color::BLUE
+	}
+
+}
+

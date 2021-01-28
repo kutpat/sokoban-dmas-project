@@ -21,24 +21,37 @@
 package sokoban.environment.^agent
 
 import framework.math.Point2i
-import sokoban.environment.maze.sokobanObject
-import sokoban.environment.maze.Direction
-import sokoban.environment.^agent.MoveUp
-import sokoban.environment.^agent.MoveDown
-import sokoban.environment.^agent.MoveLeft
-import sokoban.environment.^agent.MoveRight
-import sokoban.players.Ghost
 import io.sarl.api.core.DefaultContextInteractions
 import io.sarl.api.core.Destroy
 import io.sarl.api.core.Initialize
 import io.sarl.api.core.Lifecycle
-import io.sarl.api.core.Behaviors
 import java.util.Collections
+import java.util.HashSet
 import java.util.TreeMap
-import java.util.logging.Logger
-import io.sarl.api.core.Schedules
+import java.util.List
+import sokoban.environment.maze.sokobanObject
+import sokoban.environment.maze.Direction
+import sokoban.environment.maze.BoxObject
+import sokoban.players.SokobanAgent
+import sokoban.environment.agent.RunBeginingOfStep
+import sokoban.environment.agent.InitialKnowledge
+import sokoban.environment.agent.PathVisualization
 
-/** Definition of the agent that is managing the environment.
+/** Sokoban Environment Agent - Manages the state transformation puzzle.
+ * 
+ * This environment implements Sokoban: a discrete, grid-based state transformation puzzle.
+ * 
+ * Key characteristics:
+ * - Fully observable: Complete state visibility at all times
+ * - Deterministic: Same action from same state → same result
+ * - State transformation: Every move changes the world configuration
+ * - Goal: All agents reach exit positions (project requirement)
+ * - Win Condition: Simulation ends when all agents reach exits
+ * - All agents are autonomous (project requirement: agents must be autonomous)
+ * - No randomness in step execution
+ * 
+ * This is NOT a maze (navigation problem) but a state transformation puzzle.
+ * The challenge is not "where to go" but "what the world should look like."
  * 
  * @author $Author: sgalland$
  * @version $FullVersion$
@@ -47,13 +60,14 @@ import io.sarl.api.core.Schedules
  */
 agent Environment {
 
-	uses MazeManager, MazeFrontEnd, DefaultContextInteractions, Lifecycle, Behaviors
-
+	uses MazeManager, MazeFrontEnd, DefaultContextInteractions, Lifecycle
+	
 	var listeners = <EnvironmentListener>newArrayList
-	var player : Player
 	var controller : Controller
 	var time = 0
 	val actions = <MazeChangeQuery>newLinkedList
+	var initialKnowledgeSent = false
+	var simulationStarted = false
 
 	@SuppressWarnings("potential_inefficient_value_conversion")
 	on Initialize {
@@ -61,57 +75,81 @@ agent Environment {
 		var height = occurrence.parameters.get(1) as Integer
 		var nbGhosts = occurrence.parameters.get(2) as Integer
 		var perceptionDistance = occurrence.parameters.get(3) as Integer
-		for (i : 4 ..< occurrence.parameters.size) {
+		for (i : 4..<occurrence.parameters.size) {
 			var o = occurrence.parameters.get(i)
 			if (o instanceof EnvironmentListener) {
 				this.listeners += o
 			}
 		}
-		setSkill(new DefaultMazeManagerSkill(width, height))
-		setSkill(new DefaultMazeFrontEndSkill())
+		setSkill(new DefaultMazeManagerSkill(width, height), typeof(MazeManager))
+		setSkill(new DefaultMazeFrontEndSkill(), typeof(MazeFrontEnd))
 		this.controller = new Controller(defaultSpace, defaultAddress)
-		var sokobanBody = createsokoban
-		this.player = new Player(sokobanBody.agentId, Logger::getLogger(ID.toString))
-
+		
 		// Initialize 2 boxes in the maze
 		createBoxes(2)
+		
+		// Create 1-2 exits in the maze
+		createExits(2)
 
-		for (i : 0 ..< nbGhosts) {
-			var ghostBody = createGhost(perceptionDistance)
-			spawnInContextWithID(typeof(Ghost), ghostBody.agentId, defaultContext)
-		}
-		firePlayerBinding
 		fireControllerBinding
 		fireEnvironmentChange
-
-		// Start periodic check for player movement (every 50ms)
-		every(50) [
-			checkAndProcessPlayerMovement
-		]
 	}
 
+	/** Read agent count from listeners (GUI dashboard).
+	 */
+	def readAgentCountFromListeners : int {
+		var nbAgents = 2  // Default: 2 agents
+		System.out.println("[Environment] Reading agent count from " + this.listeners.size + " listener(s)")
+		for (listener : this.listeners) {
+			try {
+				var count = listener.getAgentCount
+				System.out.println("[Environment] Listener returned agent count: " + count)
+				nbAgents = count
+				break
+			} catch (e : Exception) {
+				System.out.println("[Environment] Error getting agent count from listener: " + e.message)
+				// Fallback to default if method not available
+				nbAgents = 2
+			}
+		}
+		return nbAgents
+	}
+	
+	var plannedPathsForGUI = <Point2i, List<Point2i>>newHashMap  // Store paths for GUI visualization
+	
 	def fireEnvironmentChange {
 		var objects = new TreeMap<Point2i, sokobanObject>
 		for (obj : getsokobanObjects) {
 			objects.put(obj.position, obj)
 		}
-		var ^event = new EnvironmentEvent(ID, this.time, mazeWidth, mazeHeight, Collections::unmodifiableMap(objects))
+		// Get exit positions from maze (cell properties, not objects)
+		var exitPositions = getExitPositions
+		var exitSet = <Point2i>newHashSet
+		exitSet.addAll(exitPositions)
+		var ^event = new EnvironmentEvent(ID, this.time, mazeWidth, mazeHeight, Collections::unmodifiableMap(objects), Collections::unmodifiableSet(exitSet))
 		for (listener : this.listeners) {
 			listener.environmentChanged(^event)
+			// Also send path updates to GUI if it's a sokobanGUI
+			if (listener instanceof sokoban.ui.sokobanGUI) {
+				var gui = listener as sokoban.ui.sokobanGUI
+				for (pathEntry : this.plannedPathsForGUI.entrySet) {
+					gui.updatePlannedPath(pathEntry.key, pathEntry.value)
+				}
+			}
+		}
+		// Clear paths after sending (they'll be updated by new PathVisualization events)
+		this.plannedPathsForGUI.clear
+	}
+	
+	/** Handle path visualization events from agents. */
+	on PathVisualization {
+		// Store path for GUI visualization
+		if (occurrence.plannedPath !== null && !occurrence.plannedPath.isEmpty) {
+			this.plannedPathsForGUI.put(occurrence.boxPosition, occurrence.plannedPath)
 		}
 	}
-
-	def firePlayerBinding {
-		for (listener : this.listeners) {
-			listener.bindPlayer(this.player)
-		}
-	}
-
-	def firePlayerUnbinding {
-		for (listener : this.listeners) {
-			listener.unbindPlayer(this.player)
-		}
-	}
+	
+	// Player binding removed - all agents are now autonomous
 
 	def fireControllerBinding {
 		for (listener : this.listeners) {
@@ -129,113 +167,85 @@ agent Environment {
 		for (listener : this.listeners) {
 			listener.gameOver()
 		}
+		// Win condition: All boxes are placed on goal cells (exits)
+		// Agent positions are irrelevant - only boxes matter
+		if (allBoxesOnGoals) {
+			// Success! All boxes are on goals
+			// The GUI will show "Simulation ended!" message
+			System.out.println("[Environment] WIN CONDITION MET: All boxes are on goals!")
+		}
 	}
 
 	on Destroy {
-		firePlayerUnbinding
+		// No player to unbind
+		// firePlayerUnbinding
 		fireControllerUnbinding;
 		clearSkill(typeof(MazeManager));
 		clearSkill(typeof(MazeFrontEnd))
 	}
-
+	
 	on Action [occurrence.time >= time] {
-		synchronized (this) {
+		synchronized(this) {
+			System.out.println("[Environment] Received Action from agent " + occurrence.source.ID + ": " + occurrence.direction)
 			this.actions += new MazeChangeQuery(occurrence.source.ID, occurrence.direction)
-
-			if (this.actions.size >= bodyCount - 1) {
-				emit(new RunEndOfStep)[it == defaultAddress]
+			
+			var bodyCount = getBodyCount
+			System.out.println("[Environment] Actions collected: " + this.actions.size + " / " + bodyCount + " bodies")
+			
+			// Wait for all agents to submit actions (or at least bodyCount - 1 to allow for one agent not acting)
+			// But also trigger if we have at least one action and enough time has passed
+			if (this.actions.size >= bodyCount - 1 || (this.actions.size > 0 && bodyCount <= 1)) {
+				System.out.println("[Environment] Triggering RunEndOfStep with " + this.actions.size + " action(s)")
+				emit(new RunEndOfStep) [it == defaultAddress]
 			}
 		}
 	}
 
-	// Handle movement events from PlayerAgent
-	on MoveUp {
-		synchronized (this) {
-			// Convert MoveUp event to Direction and add to player's action queue
-			var avatarDirection = Direction::NORTH
-			this.player.move(avatarDirection)
-			// Trigger step processing immediately for player movement
-			processPlayerMovement
-		}
-	}
+	// Keyboard movement handlers removed - all agents are now autonomous
+	// Agents make decisions based on perception and communication (project requirement)
+	// No central control allowed (project requirement)
 
-	on MoveDown {
-		synchronized (this) {
-			var avatarDirection = Direction::SOUTH
-			this.player.move(avatarDirection)
-			processPlayerMovement
-		}
-	}
-
-	on MoveLeft {
-		synchronized (this) {
-			var avatarDirection = Direction::WEST
-			this.player.move(avatarDirection)
-			processPlayerMovement
-		}
-	}
-
-	on MoveRight {
-		synchronized (this) {
-			var avatarDirection = Direction::EAST
-			this.player.move(avatarDirection)
-			processPlayerMovement
-		}
-	}
-
-	// Process player movement immediately
-	def processPlayerMovement {
-		var avatarDirection = this.player.consumeDirection
-		if (avatarDirection !== null) {
-			var avatarAction = new MazeChangeQuery(this.player.bodyId, avatarDirection)
-			this.actions += avatarAction
-
-			// Endogenous behavior: decrease the super power of sokoban
-			getSuperPowerAccessor(this.player.bodyId).decreaseSuperPower
-
-			// Change the state of the universe
-			if (applyActions(this.actions)) {
-				// sokoban is dead.
-				emit(new sokobanIsDead)
-				fireGameOver
-				killMe
-			} else {
-				// Increase time
-				this.time++
-
-				// Notify about environment's changes
-				fireEnvironmentChange
-
-				// Clear actions for next step
-				this.actions.clear
-
-				// Send perceptions
-				for (e : getPerceptions().entrySet) {
-					sendPerception(this.time, e.key.agentId, e.value, e.key.position)
-				}
-			}
-		}
-	}
-
+	var lastProgressTime = 0  // Track when progress was last made
+	var progressThreshold = 50  // If no progress for 50 steps, consider failure
+	var previousBoxPositions = <Point2i>newHashSet  // Track box positions from previous step
+	
 	on RunEndOfStep {
 		synchronized (this) {
-			// Endogenous behavior: move the sokoban from the player's action
-			var avatarDirection = this.player.consumeDirection
-			var avatarAction = new MazeChangeQuery(this.player.bodyId, avatarDirection)
-			this.actions += avatarAction
-
-			// Endogenous behavior: decrease the super power of sokoban
-                        getSuperPowerAccessor(this.player.bodyId).decreaseSuperPower
-
 			// Change the state of the universe
 			if (applyActions(this.actions)) {
 				// sokoban is dead.
                                 emit(new sokobanIsDead)
-				fireGameOver
+                                fireGameOver
 				killMe
+			} else {
+				// Check if all boxes are on goals (win condition)
+				// Agent positions are irrelevant - only boxes matter
+				if (allBoxesOnGoals) {
+					// All boxes are on goals - simulation complete!
+					System.out.println("[Environment] WIN CONDITION MET: All boxes are on goals!")
+					fireGameOver
+					killMe
+				} else {
+					// Check for progress (any box moved closer to goal or any box moved)
+					var progressMade = checkProgress
+					if (progressMade) {
+						this.lastProgressTime = this.time
+					} else {
+						// No progress made - check if we've been stuck too long
+						var stepsWithoutProgress = this.time - this.lastProgressTime
+						if (stepsWithoutProgress >= this.progressThreshold) {
+							// No progress for threshold steps and boxes not all on goals
+							// This indicates an unsolvable state
+							System.out.println("[Environment] FAILURE CONDITION: No progress for " + stepsWithoutProgress + " steps. Unsolvable state detected!")
+							System.out.println("[Environment] At least one box is not on an exit and no agent can make progress.")
+							fireGameOver
+							killMe
+						}
+					}
+				}
 			}
 
-			// Increase time
+                        // Increase time
                         this.time++
 
 			// Notify about environment's changes
@@ -244,33 +254,153 @@ agent Environment {
 			// Move to next step
 			emit(new RunBeginingOfStep)
                 }
+        }
+	
+	/** Check if any progress was made in this step.
+	 * Progress means: any box moved, or any box moved closer to a goal.
+	 */
+	def checkProgress : boolean {
+		// Get current box positions
+		var currentBoxPositions = <Point2i>newHashSet
+		for (obj : getsokobanObjects) {
+			if (obj instanceof BoxObject) {
+				currentBoxPositions.add(obj.position)
+			}
+		}
+		
+		// If this is first step, initialize previous positions
+		if (this.previousBoxPositions.isEmpty) {
+			this.previousBoxPositions = currentBoxPositions
+			return true  // First step, assume progress
+		}
+		
+		// Check if any box moved
+		var boxMoved = false
+		for (currentPos : currentBoxPositions) {
+			if (!this.previousBoxPositions.contains(currentPos)) {
+				// Box is at new position - progress made!
+				boxMoved = true
+				break
+			}
+		}
+		
+		// Check if any box moved closer to a goal
+		var boxMovedCloser = false
+		if (!boxMoved) {
+			// Check if boxes moved closer to goals (compare distances)
+			for (currentPos : currentBoxPositions) {
+				// Find nearest goal for this box
+				var nearestGoal = findNearestGoalForBox(currentPos)
+				if (nearestGoal !== null) {
+					// Check if this box was previously further from goal
+					for (prevPos : this.previousBoxPositions) {
+						var prevDistance = calculateDistance(prevPos, nearestGoal)
+						var currentDistance = calculateDistance(currentPos, nearestGoal)
+						if (currentDistance < prevDistance) {
+							boxMovedCloser = true
+							break
+						}
+					}
+				}
+			}
+		}
+		
+		// Update previous positions for next step
+		this.previousBoxPositions = currentBoxPositions
+		
+		// Progress made if box moved or moved closer
+		return boxMoved || boxMovedCloser || !this.actions.isEmpty
+	}
+	
+	/** Find nearest goal for a box position. */
+	def findNearestGoalForBox(boxPos : Point2i) : Point2i {
+		var exitPositions = getExitPositions
+		if (exitPositions.isEmpty) {
+			return null
+		}
+		
+		var nearestExit : Point2i = null
+		var minDistance = Integer::MAX_VALUE
+		
+		for (exitPos : exitPositions) {
+			var distance = Math::abs(exitPos.x - boxPos.x) + Math::abs(exitPos.y - boxPos.y)
+			if (distance < minDistance) {
+				minDistance = distance
+				nearestExit = exitPos
+			}
+		}
+		
+		return nearestExit
+	}
+	
+	/** Calculate Manhattan distance between two points. */
+	def calculateDistance(pos1 : Point2i, pos2 : Point2i) : int {
+		if (pos1 === null || pos2 === null) {
+			return Integer::MAX_VALUE
+		}
+		return Math::abs(pos1.x - pos2.x) + Math::abs(pos1.y - pos2.y)
+	}
+	
+	// Handle agent reaching exit
+	on AgentReachedExit {
+		// Agent announced it reached exit
+		// The environment will verify this in allAgentsAtExit check
 	}
 	
 	on RunBeginingOfStep {
 		synchronized (this) {
+			// Start simulation only after controller is triggered (dashboard agent count is finalized).
+			if (!this.simulationStarted) {
+				var nbAgents = readAgentCountFromListeners
+				System.out.println("[Environment] Will spawn " + nbAgents + " autonomous SokobanAgent(s)")
+
+				// Create multiple autonomous Sokoban agents based on dashboard selection
+				for (i : 0 ..< nbAgents) {
+					var sokobanAgentBody = createsokoban
+					System.out.println("[Environment] Spawning SokobanAgent #" + (i + 1) + " with body ID: " +
+						sokobanAgentBody.agentId)
+					spawnInContextWithID(typeof(SokobanAgent), sokobanAgentBody.agentId, defaultContext)
+				}
+				System.out.println("[Environment] Finished spawning " + nbAgents + " agents")
+				this.simulationStarted = true
+				this.initialKnowledgeSent = false
+				fireEnvironmentChange
+
+				// Start the simulation loop by emitting the first RunBeginingOfStep
+				// This will send perceptions to agents, who will respond with actions
+				// InitialKnowledge will be emitted in the first RunBeginingOfStep after agents are ready
+				emit(new RunBeginingOfStep)
+			}
+			// Emit InitialKnowledge on first step (after agents are ready)
+			if (!this.initialKnowledgeSent) {
+				var boxPositions = <Point2i>newArrayList
+				var exitPositions = getExitPositions
+				for (obj : getsokobanObjects) {
+					if (obj instanceof BoxObject) {
+						boxPositions += obj.position
+					}
+				}
+				System.out.println("[Environment] Emitting InitialKnowledge: " + boxPositions.size + " boxes, " + exitPositions.size + " exits")
+				emit(new InitialKnowledge(boxPositions, exitPositions))
+				this.initialKnowledgeSent = true
+			}
+			
 			this.actions.clear
 
-			// Check if player has pending movement and process it immediately
-			var pendingDir = this.player.getDirection
-			if (pendingDir !== null) {
-				processPlayerMovement
-			}
-
-			for (e : getPerceptions().entrySet) {
+			// Send perceptions to all agents (including SokobanAgent)
+			var perceptions = getPerceptions
+			System.out.println("[Environment] RunBeginingOfStep: Sending perceptions to " + perceptions.size + " agent(s)")
+			for (e : perceptions.entrySet) {
+				System.out.println("[Environment] Sending perception to agent " + e.key.agentId + " at position " + e.key.position)
 				sendPerception(this.time, e.key.agentId, e.value, e.key.position)
 			}
-		}
-	}
-
-	// Also process movement when player.move() is called via a periodic check
-	// This ensures movement happens even if RunBeginingOfStep isn't firing
-	def checkAndProcessPlayerMovement {
-		synchronized (this) {
-			var pendingDir = this.player.getDirection
-			if (pendingDir !== null) {
-				processPlayerMovement
+			
+			// If no perceptions were sent, we still need to advance the simulation
+			// This can happen if agents haven't been fully initialized yet
+			if (perceptions.isEmpty) {
+				System.out.println("[Environment] Warning: No perceptions to send. Agent bodies may not be ready yet.")
 			}
 		}
 	}
-	uses Schedules
-	}
+
+}

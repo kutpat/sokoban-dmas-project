@@ -1,0 +1,268 @@
+/* 
+ * Serializable state representation for RL Sokoban environment.
+ * 
+ * This class represents the complete state of a Sokoban puzzle,
+ * suitable for serialization, state comparison, and RL training.
+ */
+package sokoban.rl
+
+import framework.math.Point2i
+import java.io.Serializable
+import java.lang.reflect.Array
+import java.util.ArrayList
+import java.util.List
+import org.eclipse.xtext.xbase.lib.Pure
+
+/**
+ * Serializable state representation for Sokoban RL environment.
+ * 
+ * This state captures:
+ * - Agent position
+ * - Box positions and onTarget flags
+ * - Wall layout (immutable reference)
+ * - Target positions (immutable reference)
+ * - Step count
+ * 
+ * The state is serializable for RL frameworks, replay buffers, and debugging.
+ */
+class SokobanState implements Serializable {
+
+	val agentPosition : Point2i
+	val boxPositions : List<Point2i>  // Ordered list, same order as boxes
+	val boxOnTargetFlags : List<boolean>  // Parallel to boxPositions
+	val wallGrid : boolean[][]  // Immutable, can be shared reference
+	val targetPositions : List<Point2i>  // Immutable
+	val stepCount : int
+	val width : int
+	val height : int
+
+	new (
+		agentPosition : Point2i,
+		boxPositions : List<Point2i>,
+		boxOnTargetFlags : List<boolean>,
+		wallGrid : boolean[][],
+		targetPositions : List<Point2i>,
+		stepCount : int,
+		width : int,
+		height : int
+	) {
+		this.agentPosition = agentPosition
+		this.boxPositions = new ArrayList(boxPositions)
+		this.boxOnTargetFlags = new ArrayList(boxOnTargetFlags)
+		this.wallGrid = wallGrid  // Reference to immutable grid
+		this.targetPositions = new ArrayList(targetPositions)
+		this.stepCount = stepCount
+		this.width = width
+		this.height = height
+	}
+
+	@Pure
+	def getAgentPosition : Point2i {
+		this.agentPosition
+	}
+
+	@Pure
+	def getBoxPositions : List<Point2i> {
+		this.boxPositions
+	}
+
+	@Pure
+	def getBoxOnTargetFlags : List<boolean> {
+		this.boxOnTargetFlags
+	}
+
+	@Pure
+	def getWallGrid : boolean[][] {
+		this.wallGrid
+	}
+
+	@Pure
+	def getTargetPositions : List<Point2i> {
+		this.targetPositions
+	}
+
+	@Pure
+	def getStepCount : int {
+		this.stepCount
+	}
+
+	@Pure
+	def getWidth : int {
+		this.width
+	}
+
+	@Pure
+	def getHeight : int {
+		this.height
+	}
+
+	/** Check if all boxes are on target cells.
+	 * 
+	 * @return true if all boxes are on targets
+	 */
+	@Pure
+	def allBoxesOnTargets : boolean {
+		if (this.boxOnTargetFlags.isEmpty) {
+			return false
+		}
+		for (onTarget : this.boxOnTargetFlags) {
+			if (!onTarget) {
+				return false
+			}
+		}
+		return true
+	}
+
+	/** Convert state to vector representation for neural networks.
+	 * Format: [agent_x, agent_y, box1_x, box1_y, box1_onTarget, box2_x, box2_y, box2_onTarget, ...]
+	 * 
+	 * @return state as double array
+	 */
+	@Pure
+	def toVector : double[] {
+		var size = 2 + (this.boxPositions.size * 3)  // agent (2) + boxes (x, y, onTarget each)
+		var vector = Array::newInstance(typeof(double), size) as double[]
+		var idx = 0
+		
+		// Agent position (normalized to [0, 1])
+		vector.set(idx++, this.agentPosition.x as double / this.width)
+		vector.set(idx++, this.agentPosition.y as double / this.height)
+		
+		// Box positions and flags
+		for (var i = 0; i < this.boxPositions.size; i++) {
+			var boxPos = this.boxPositions.get(i)
+			vector.set(idx++, boxPos.x as double / this.width)
+			vector.set(idx++, boxPos.y as double / this.height)
+			vector.set(idx++, if (this.boxOnTargetFlags.get(i)) 1.0 else 0.0)
+		}
+		
+		return vector
+	}
+
+	/** Convert state to grid representation for CNN.
+	 * Returns 4 channels: [walls, targets, agent, boxes]
+	 * 
+	 * @return 4D array [channels][height][width]
+	 */
+	@Pure
+	def toGrid : double[][][] {
+		var channels = 4
+		var grid = Array::newInstance(typeof(double[]), channels) as double[][]
+		
+		// Initialize channels
+		for (var c = 0; c < channels; c++) {
+			grid.set(c, Array::newInstance(typeof(double), this.height) as double[])
+			for (var y = 0; y < this.height; y++) {
+				grid.get(c).set(y, Array::newInstance(typeof(double), this.width) as double[])
+			}
+		}
+		
+		// Channel 0: Walls
+		for (var x = 0; x < this.width; x++) {
+			for (var y = 0; y < this.height; y++) {
+				if (this.wallGrid !== null && x < this.wallGrid.length && y < this.wallGrid.get(x).length) {
+					grid.get(0).get(y).set(x, if (this.wallGrid.get(x).get(y)) 1.0 else 0.0)
+				}
+			}
+		}
+		
+		// Channel 1: Targets
+		for (targetPos : this.targetPositions) {
+			if (targetPos.x >= 0 && targetPos.x < this.width && targetPos.y >= 0 && targetPos.y < this.height) {
+				grid.get(1).get(targetPos.y).set(targetPos.x, 1.0)
+			}
+		}
+		
+		// Channel 2: Agent
+		if (this.agentPosition.x >= 0 && this.agentPosition.x < this.width && 
+			this.agentPosition.y >= 0 && this.agentPosition.y < this.height) {
+			grid.get(2).get(this.agentPosition.y).set(this.agentPosition.x, 1.0)
+		}
+		
+		// Channel 3: Boxes
+		for (boxPos : this.boxPositions) {
+			if (boxPos.x >= 0 && boxPos.x < this.width && boxPos.y >= 0 && boxPos.y < this.height) {
+				grid.get(3).get(boxPos.y).set(boxPos.x, 1.0)
+			}
+		}
+		
+		return grid
+	}
+
+	/** Compute hash code for state comparison.
+	 * 
+	 * @return hash code
+	 */
+	@Pure
+	override def hashCode : int {
+		var hash = this.agentPosition.hashCode
+		hash = hash * 31 + this.width
+		hash = hash * 31 + this.height
+		for (boxPos : this.boxPositions) {
+			hash = hash * 31 + boxPos.hashCode
+		}
+		for (onTarget : this.boxOnTargetFlags) {
+			hash = hash * 31 + (if (onTarget) 1 else 0)
+		}
+		return hash
+	}
+
+	/** Check if this state equals another state.
+	 * 
+	 * @param obj the other state
+	 * @return true if states are equal
+	 */
+	@Pure
+	override def equals(obj : Object) : boolean {
+		if (obj === this) {
+			return true
+		}
+		if (obj === null || !(obj instanceof SokobanState)) {
+			return false
+		}
+		var other = obj as SokobanState
+		
+		if (this.width != other.width || this.height != other.height) {
+			return false
+		}
+		
+		if (!this.agentPosition.equals(other.agentPosition)) {
+			return false
+		}
+		
+		if (this.boxPositions.size != other.boxPositions.size) {
+			return false
+		}
+		
+		for (var i = 0; i < this.boxPositions.size; i++) {
+			if (!this.boxPositions.get(i).equals(other.boxPositions.get(i))) {
+				return false
+			}
+			if (this.boxOnTargetFlags.get(i) != other.boxOnTargetFlags.get(i)) {
+				return false
+			}
+		}
+		
+		return true
+	}
+
+	/** Create a copy of this state.
+	 * 
+	 * @return a new state with copied values
+	 */
+	@Pure
+	def copy : SokobanState {
+		new SokobanState(
+			this.agentPosition,
+			this.boxPositions,
+			this.boxOnTargetFlags,
+			this.wallGrid,
+			this.targetPositions,
+			this.stepCount,
+			this.width,
+			this.height
+		)
+	}
+
+}
+

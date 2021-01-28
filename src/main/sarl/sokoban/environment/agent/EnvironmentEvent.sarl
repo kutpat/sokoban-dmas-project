@@ -22,6 +22,7 @@ package sokoban.environment.^agent
 
 import java.util.EventObject
 import java.util.Map
+import java.util.Set
 import java.util.UUID
 
 import org.eclipse.xtext.xbase.lib.Pure
@@ -44,13 +45,17 @@ class EnvironmentEvent extends EventObject {
 	val height : int
 
 	val objects : Map<Point2i, sokobanObject>
+	
+	/** Exit positions (cell properties, not objects). */
+	val exitPositions : Set<Point2i>
 
-	new (source : UUID, time : int, width : int, height : int, objects : Map<Point2i, sokobanObject>) {
+	new (source : UUID, time : int, width : int, height : int, objects : Map<Point2i, sokobanObject>, exitPositions : Set<Point2i>) {
 		super(source)
 		this.time = time
 		this.width = width
 		this.height = height
 		this.objects = objects
+		this.exitPositions = exitPositions
 	}
 	
 	@Pure
@@ -71,6 +76,11 @@ class EnvironmentEvent extends EventObject {
 	@Pure
 	def getObjects : Map<Point2i, sokobanObject> {
 		this.objects
+	}
+	
+	@Pure
+	def getExitPositions : Set<Point2i> {
+		this.exitPositions
 	}
 
 }

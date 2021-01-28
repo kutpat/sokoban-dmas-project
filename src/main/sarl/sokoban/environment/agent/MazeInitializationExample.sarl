@@ -1,0 +1,75 @@
+/* 
+ * Example initialization showing how to add boxes to the maze.
+ * 
+ * This demonstrates how to initialize the maze with 2 boxes
+ * and integrate with the existing maze environment.
+ */
+package sokoban.environment.^agent
+
+import sokoban.environment.maze.BoxObject
+import sokoban.environment.maze.Maze
+
+/**
+ * Example helper class showing how to initialize boxes in the maze.
+ * 
+ * Usage in Environment agent:
+ * 
+ * on Initialize {
+ *     // ... existing initialization code ...
+ *     // After creating the maze, add boxes
+ *     initializeBoxes(maze, 2)
+ * }
+ */
+class MazeInitializationExample {
+	
+	/** Initialize boxes in the maze at walkable positions.
+	 * 
+	 * @param maze the maze instance
+	 * @param numberOfBoxes number of boxes to create
+	 */
+	static def initializeBoxes(maze : Maze, numberOfBoxes : int) : void {
+		var boxesCreated = 0
+		var attempts = 0
+		val maxAttempts = 1000
+		val random = new java.util.Random
+		
+		while (boxesCreated < numberOfBoxes && attempts < maxAttempts) {
+			attempts++
+			var x = random.nextInt(maze.width)
+			var y = random.nextInt(maze.height)
+			
+			// Check if position is walkable and empty
+			if (maze.isWalkable(x, y)) {
+				var obj = maze.getObjectAt(x, y)
+				// Only place box if cell is empty (null) or has a pickable object
+				if (obj === null || obj.pickable) {
+					var box = new BoxObject(x, y, maze)
+					maze.setObjectAt(x, y, box)
+					boxesCreated++
+				}
+			}
+		}
+	}
+	
+	/** Initialize boxes at specific positions.
+	 * 
+	 * @param maze the maze instance
+	 * @param positions list of Point2i positions for boxes
+	 */
+	static def initializeBoxesAt(maze : Maze, positions : java.util.List<framework.math.Point2i>) : void {
+		for (pos : positions) {
+			var x = pos.x
+			var y = pos.y
+			if (maze.inBounds(x, y) && maze.isWalkable(x, y)) {
+				var obj = maze.getObjectAt(x, y)
+				if (obj === null || obj.pickable) {
+					var box = new BoxObject(x, y, maze)
+					maze.setObjectAt(x, y, box)
+				}
+			}
+		}
+	}
+	
+}
+
+

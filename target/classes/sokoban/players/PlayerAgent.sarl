@@ -1,0 +1,51 @@
+/* 
+ * Player agent that emits movement events.
+ * 
+ * This agent listens for movement commands and emits
+ * movement events to the environment.
+ */
+package sokoban.players
+
+import sokoban.environment.^agent.MoveUp
+import sokoban.environment.^agent.MoveDown
+import sokoban.environment.^agent.MoveLeft
+import sokoban.environment.^agent.MoveRight
+import io.sarl.api.core.DefaultContextInteractions
+import io.sarl.api.core.Initialize
+import io.sarl.api.core.Lifecycle
+
+/**
+ * Player agent that emits movement events.
+ * 
+ * This agent responds to movement commands and emits
+ * the corresponding movement events to the environment.
+ */
+agent PlayerAgent {
+	
+	uses DefaultContextInteractions, Lifecycle
+	
+	on Initialize {
+		// Player agent is ready
+	}
+	
+	// Emit movement events when requested
+	// These can be triggered by UI or other sources
+	def emitMoveUp {
+		emit(new MoveUp)
+	}
+	
+	def emitMoveDown {
+		emit(new MoveDown)
+	}
+	
+	def emitMoveLeft {
+		emit(new MoveLeft)
+	}
+	
+	def emitMoveRight {
+		emit(new MoveRight)
+	}
+	
+}
+
+

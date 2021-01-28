@@ -20,6 +20,7 @@
  */
 package sokoban.environment.agent;
 
+import framework.math.Point2i;
 import io.sarl.lang.core.AgentTrait;
 import io.sarl.lang.core.Capacity;
 import io.sarl.lang.core.annotation.SarlElementType;
@@ -30,10 +31,12 @@ import java.util.UUID;
 import org.eclipse.xtext.xbase.lib.Pure;
 import org.eclipse.xtext.xbase.lib.XbaseGenerated;
 import sokoban.environment.maze.AgentBody;
+import sokoban.environment.maze.Direction;
 import sokoban.environment.maze.GhostBody;
 import sokoban.environment.maze.SuperPowerAccessor;
 import sokoban.environment.maze.sokobanBody;
 import sokoban.environment.maze.sokobanObject;
+import sokoban.rl.SokobanState;
 
 /**
  * Capacity to manage a maze.
@@ -114,6 +117,80 @@ public interface MazeManager extends Capacity {
    * Create boxes randomly in the maze.
    */
   void createBoxes(final int numberOfBoxes);
+
+  /**
+   * Create an exit at the given position.
+   */
+  boolean createExit(final int x, final int y);
+
+  /**
+   * Create exits randomly in the maze.
+   */
+  void createExits(final int numberOfExits);
+
+  /**
+   * Check if all agents have reached exits.
+   * 
+   * Only counts sokobanBody instances (autonomous SokobanAgent),
+   * excludes GhostBody.
+   * 
+   * All agents are autonomous (project requirement).
+   * 
+   * @return true if all agents are at exit positions
+   */
+  boolean allAgentsAtExit();
+
+  /**
+   * Check if all boxes are placed on goal cells (exits).
+   * This is the correct win condition for Sokoban.
+   * 
+   * @return true if all boxes are on goals
+   */
+  boolean allBoxesOnGoals();
+
+  /**
+   * Get all exit positions.
+   */
+  @Pure
+  List<Point2i> getExitPositions();
+
+  /**
+   * Extract SokobanState from current maze state for RL.
+   * 
+   * @param stepCount current step count
+   * @return SokobanState representation of current state
+   */
+  SokobanState extractSokobanState(final int stepCount);
+
+  /**
+   * Execute a player movement action directly (for RL).
+   * 
+   * @param direction the direction to move
+   * @return true if action was valid and executed
+   */
+  boolean executePlayerAction(final Direction direction);
+
+  /**
+   * Count boxes currently on target cells (exits).
+   * 
+   * @return number of boxes on targets
+   */
+  int countBoxesOnTargets();
+
+  /**
+   * Count agents currently at exit positions.
+   * 
+   * @return number of agents at exits
+   */
+  int countAgentsAtExit();
+
+  /**
+   * Get total number of boxes in the maze.
+   * 
+   * @return total number of boxes
+   */
+  @Pure
+  int getTotalBoxCount();
 
   /**
    * @ExcludeFromApidoc
@@ -226,6 +303,96 @@ public interface MazeManager extends Capacity {
       try {
         ensureCallerInLocalThread();
         this.capacity.createBoxes(numberOfBoxes);
+      } finally {
+        resetCallerInLocalThread();
+      }
+    }
+
+    public boolean createExit(final int x, final int y) {
+      try {
+        ensureCallerInLocalThread();
+        return this.capacity.createExit(x, y);
+      } finally {
+        resetCallerInLocalThread();
+      }
+    }
+
+    public void createExits(final int numberOfExits) {
+      try {
+        ensureCallerInLocalThread();
+        this.capacity.createExits(numberOfExits);
+      } finally {
+        resetCallerInLocalThread();
+      }
+    }
+
+    public boolean allAgentsAtExit() {
+      try {
+        ensureCallerInLocalThread();
+        return this.capacity.allAgentsAtExit();
+      } finally {
+        resetCallerInLocalThread();
+      }
+    }
+
+    public boolean allBoxesOnGoals() {
+      try {
+        ensureCallerInLocalThread();
+        return this.capacity.allBoxesOnGoals();
+      } finally {
+        resetCallerInLocalThread();
+      }
+    }
+
+    public List<Point2i> getExitPositions() {
+      try {
+        ensureCallerInLocalThread();
+        return this.capacity.getExitPositions();
+      } finally {
+        resetCallerInLocalThread();
+      }
+    }
+
+    public SokobanState extractSokobanState(final int stepCount) {
+      try {
+        ensureCallerInLocalThread();
+        return this.capacity.extractSokobanState(stepCount);
+      } finally {
+        resetCallerInLocalThread();
+      }
+    }
+
+    public boolean executePlayerAction(final Direction direction) {
+      try {
+        ensureCallerInLocalThread();
+        return this.capacity.executePlayerAction(direction);
+      } finally {
+        resetCallerInLocalThread();
+      }
+    }
+
+    public int countBoxesOnTargets() {
+      try {
+        ensureCallerInLocalThread();
+        return this.capacity.countBoxesOnTargets();
+      } finally {
+        resetCallerInLocalThread();
+      }
+    }
+
+    public int countAgentsAtExit() {
+      try {
+        ensureCallerInLocalThread();
+        return this.capacity.countAgentsAtExit();
+      } finally {
+        resetCallerInLocalThread();
+      }
+    }
+
+    public int getTotalBoxCount() {
+      try {
+        ensureCallerInLocalThread();
+        return this.capacity.getTotalBoxCount();
       } finally {
         resetCallerInLocalThread();
       }

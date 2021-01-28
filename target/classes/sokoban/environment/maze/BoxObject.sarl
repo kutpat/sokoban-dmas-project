@@ -9,19 +9,30 @@ import org.eclipse.xtext.xbase.lib.Pure
 import framework.math.Point2i
 
 /**
- * Box in the sokoban environment.
- * Boxes can be pushed by the player.
+ * Box artifact in the Sokoban environment.
+ * Boxes can be pushed by the agent and must be placed on target cells.
+ * 
+ * This is a passive artifact - it has state (position, onTarget) but no autonomy.
  * 
  * @author Generated
  */
 class BoxObject extends sokobanObject {
 
+	/** Flag indicating if this box is currently on a target cell.
+	 * Updated by the environment when box position changes.
+	 */
+	var onTarget : boolean = false
+
 	new (x : int, y : int, maze : Maze) {
 		super(x, y, maze)
+		// Check initial target status
+		updateOnTargetStatus
 	}
 
 	new (position : Point2i, maze : Maze) {
 		super(position, maze)
+		// Check initial target status
+		updateOnTargetStatus
 	}
 
 	@Pure
@@ -34,5 +45,34 @@ class BoxObject extends sokobanObject {
 		false
 	}
 
+	/** Check if this box is on a target cell.
+	 * 
+	 * @return true if box is on a target cell
+	 */
+	@Pure
+	def isOnTarget : boolean {
+		this.onTarget
+	}
+
+	/** Update the onTarget flag based on current position.
+	 * Called by environment when box position changes.
+	 */
+	def updateOnTargetStatus : void {
+		var maze = getMaze
+		if (maze !== null) {
+			this.onTarget = maze.isExit(this.position.x, this.position.y)
+		}
+	}
+
+	/** Set the onTarget flag explicitly.
+	 * Used by environment for state management.
+	 * 
+	 * @param onTarget the new onTarget status
+	 */
+	def setOnTarget(onTarget : boolean) : void {
+		this.onTarget = onTarget
+	}
+
 }
+
 

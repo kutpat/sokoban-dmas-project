@@ -23,6 +23,7 @@ package sokoban.environment.agent;
 import io.sarl.lang.core.annotation.SarlElementType;
 import io.sarl.lang.core.annotation.SarlSpecification;
 import java.util.EventListener;
+import org.eclipse.xtext.xbase.lib.Pure;
 import org.eclipse.xtext.xbase.lib.XbaseGenerated;
 
 /**
@@ -69,4 +70,13 @@ public interface EnvironmentListener extends EventListener {
    * Invoked when the game is over.
    */
   void gameOver();
+
+  /**
+   * Get the number of agents to spawn (from dashboard).
+   * This is called during initialization to determine how many agents to create.
+   * 
+   * @return number of agents to spawn (default: 2)
+   */
+  @Pure
+  int getAgentCount();
 }

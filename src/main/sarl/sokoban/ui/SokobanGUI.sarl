@@ -20,28 +20,20 @@ package sokoban.ui
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  * This program is free software; you can redistribute it and/or modify
  */
+
 import framework.math.Point2i
 import framework.util.Resources
-import sokoban.environment.^agent.Controller
-import sokoban.environment.^agent.EnvironmentEvent
-import sokoban.environment.^agent.EnvironmentListener
-import sokoban.environment.^agent.Player
-import sokoban.environment.maze.Direction
-import sokoban.environment.maze.GhostBody
-import sokoban.environment.maze.sokobanBody
-import sokoban.environment.maze.sokobanObject
-import sokoban.environment.maze.PillObject
-import sokoban.environment.maze.WallObject
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Dimension
 import java.awt.Graphics
 import java.awt.Graphics2D
+import java.awt.RenderingHints
 import java.awt.^event.KeyEvent
 import java.awt.^event.KeyListener
-import java.awt.RenderingHints
-import java.lang.Math
 import java.util.Map
+import java.util.Set
+import java.util.List
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import javax.imageio.ImageIO
@@ -52,6 +44,16 @@ import javax.swing.JFrame
 import javax.swing.JOptionPane
 import javax.swing.JPanel
 import javax.swing.JScrollPane
+import sokoban.environment.^agent.Controller
+import sokoban.environment.^agent.EnvironmentEvent
+import sokoban.environment.^agent.EnvironmentListener
+import sokoban.environment.^agent.Player
+import sokoban.environment.maze.BoxObject
+import sokoban.environment.maze.ExitObject
+import sokoban.environment.maze.GhostBody
+import sokoban.environment.maze.WallObject
+import sokoban.environment.maze.sokobanBody
+import sokoban.environment.maze.sokobanObject
 
 /** 
  * Swing UI for the sokoban game. 
@@ -82,12 +84,23 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 	val isInit = new AtomicBoolean
 
 	val gridPanel : GridPanel
+	
+	/** Update planned path for visualization (called by Environment). */
+	def updatePlannedPath(boxPosition : Point2i, path : List<Point2i>) {
+		this.gridPanel.updatePlannedPath(boxPosition, path)
+	}
 
 	val startButton : JButton
 
-	val waitingDuration : long
+	val fastForwardButton : JButton
 
-	var player : Player
+	val dashboardPanel : DashboardPanel
+
+	var waitingDuration : long
+	
+	var originalWaitingDuration : long
+	
+	var isFastForward : boolean
 
 	var controller : Controller
 
@@ -96,23 +109,35 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 	 */
 	new (waitingDuration : long) {
 		this.waitingDuration = waitingDuration
+		this.originalWaitingDuration = waitingDuration
+		this.isFastForward = false
 		this.title = "Sokoban Simulator"
 		var sokobanIcon = Resources::getResource(typeof(sokobanGUI), "sokoban.png")
 		this.iconImage = ImageIO::read(sokobanIcon)
-		var iconURL = Resources::getResource(this.class, "play.png")
-		this.startButton = new JButton(new ImageIcon(iconURL))
+		var playIconURL = Resources::getResource(this.class, "play.png")
+		this.dashboardPanel = new DashboardPanel
+		this.startButton = new JButton(new ImageIcon(playIconURL))
 		this.startButton.toolTipText = "Start simulation"
 		this.startButton.enabled = false
 		this.startButton.addActionListener [
 			var ctrl = sokobanGUI.this.controller
 			if (ctrl !== null && !ctrl.started) {
 				sokobanGUI.this.startButton.enabled = false
+				sokobanGUI.this.dashboardPanel.setAgentCountEnabled(false)
 				ctrl.startSimulation
 			}
+		]
+		// Fast Forward button
+		this.fastForwardButton = new JButton("⏩ Fast Forward")
+		this.fastForwardButton.toolTipText = "Toggle fast forward (speed up simulation)"
+		this.fastForwardButton.enabled = false
+		this.fastForwardButton.addActionListener [
+			sokobanGUI.this.toggleFastForward
 		]
 		var topPanel = new JPanel
 		topPanel.layout = new BoxLayout(topPanel, BoxLayout::X_AXIS)
 		topPanel.add(this.startButton)
+		topPanel.add(this.fastForwardButton)
 		this.gridPanel = new GridPanel
 		this.gridPanel.focusable = true
 		this.gridPanel.addKeyListener(this)
@@ -120,28 +145,47 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 		this.contentPane.layout = new BorderLayout
 		this.contentPane.add(BorderLayout::NORTH, topPanel)
 		this.contentPane.add(BorderLayout::CENTER, sc)
+		this.contentPane.add(BorderLayout::SOUTH, this.dashboardPanel)
 		this.preferredSize = new Dimension(600, 600)
 		this.defaultCloseOperation = JFrame::EXIT_ON_CLOSE
 		pack
 		requestFocus
 	}
 
+	// Player binding removed - all agents are now autonomous
 	def bindPlayer(player : Player) : void {
-		synchronized (this) {
-			this.player = player
-		}
+		// No-op: all agents are autonomous (project requirement)
 	}
 
 	def unbindPlayer(player : Player) : void {
-		synchronized (this) {
-			this.player = null
-		}
+		// No-op: all agents are autonomous (project requirement)
 	}
 
 	def bindController(controller : Controller) : void {
 		synchronized (this) {
 			this.controller = controller
 			this.startButton.enabled = !this.controller.started
+			this.fastForwardButton.enabled = true
+		}
+	}
+	
+	/** Toggle fast forward mode. */
+	def toggleFastForward : void {
+		synchronized (this) {
+			this.isFastForward = !this.isFastForward
+			if (this.isFastForward) {
+				// Fast forward: set delay to 0
+				this.waitingDuration = 0
+				this.fastForwardButton.text = "⏸ Normal Speed"
+				this.fastForwardButton.toolTipText = "Return to normal speed"
+				System.out.println("[GUI] Fast forward enabled")
+			} else {
+				// Normal speed: restore original delay
+				this.waitingDuration = this.originalWaitingDuration
+				this.fastForwardButton.text = "⏩ Fast Forward"
+				this.fastForwardButton.toolTipText = "Toggle fast forward (speed up simulation)"
+				System.out.println("[GUI] Normal speed restored")
+			}
 		}
 	}
 
@@ -154,8 +198,23 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 
 	def gameOver : void {
 		this.visible = false
-		JOptionPane::showMessageDialog(this, "The sokoban is dead!", this.title, JOptionPane::INFORMATION_MESSAGE)
+		// Show win message - all agents reached exits
+		// All agents are autonomous (project requirement)
+		JOptionPane::showMessageDialog(this, 
+			"Simulation Complete!\n\nAll agents have reached the exits.\n\nWin Condition Met!", 
+			this.title, 
+			JOptionPane::INFORMATION_MESSAGE)
 		dispose
+	}
+
+	override getAgentCount : int {
+		if (this.dashboardPanel !== null) {
+			var count = this.dashboardPanel.getAgentCount
+			System.out.println("[GUI] Dashboard reports agent count: " + count)
+			return count
+		}
+		System.out.println("[GUI] Dashboard panel is null, returning default: 2")
+		return 2  // Default: 2 agents
 	}
 
 	@SuppressWarnings("discouraged_reference")
@@ -168,7 +227,11 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 			this.visible = true
 			this.gridPanel.requestFocus
 		}
-		this.gridPanel.setObjects(^event.time, ^event.objects)
+		this.gridPanel.setObjects(^event.time, ^event.objects, ^event.exitPositions)
+		
+		// Update dashboard statistics
+		updateDashboardStats(^event)
+		
 		if (this.waitingDuration > 0) {
 			try {
 				Thread::sleep(this.waitingDuration)
@@ -178,23 +241,47 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 		}
 	}
 
-	def keyPressed(e : KeyEvent) {
-		var player : Player
-		synchronized (this) {
-			player = this.player
-		}
-		if (player !== null) {
-			switch (e.keyCode) {
-				case KeyEvent::VK_LEFT:
-					player.move(Direction::WEST)
-				case KeyEvent::VK_RIGHT:
-					player.move(Direction::EAST)
-				case KeyEvent::VK_UP:
-					player.move(Direction::NORTH)
-				case KeyEvent::VK_DOWN:
-					player.move(Direction::SOUTH)
+	/** Update dashboard statistics from environment event.
+	 * 
+	 * @param ^event the environment event
+	 */
+	def updateDashboardStats(^event : EnvironmentEvent) : void {
+		// Count boxes and boxes on targets
+		var totalBoxes = 0
+		var boxesOnTargets = 0
+		var totalAgents = 0
+		var agentsAtExit = 0
+		
+		// Get exit positions from event (cell properties, not objects)
+		var exitPositions = ^event.exitPositions
+		
+		// Count boxes and check if they're on targets
+		for (entry : ^event.objects.entrySet) {
+			var obj = entry.value
+			if (obj instanceof BoxObject) {
+				totalBoxes++
+				// Check if box is on target using isOnTarget flag
+				if ((obj as BoxObject).isOnTarget) {
+					boxesOnTargets++
+				}
+			} else if (obj instanceof sokobanBody) {
+				totalAgents++
+				if (exitPositions.contains(entry.key)) {
+					agentsAtExit++
+				}
 			}
 		}
+		
+		// Update dashboard
+		this.dashboardPanel.updateBoxStats(boxesOnTargets, totalBoxes)
+		this.dashboardPanel.updateAgentStats(agentsAtExit, totalAgents)
+		this.dashboardPanel.updateTimeStats(0, ^event.time)  // Step count not available in event
+	}
+
+	def keyPressed(e : KeyEvent) {
+		// Keyboard input disabled - all agents are now autonomous (project requirement)
+		// Agents make decisions based on perception and communication
+		// No central control allowed (project requirement)
 	}
 
 	def keyReleased(e : KeyEvent) {
@@ -215,35 +302,70 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 	 */
         private static class GridPanel extends JPanel {
 
-		static val FLOOR_BASE = new Color(224, 215, 200)
-		static val FLOOR_NOISE1 = new Color(236, 229, 215)
-		static val FLOOR_NOISE2 = new Color(210, 200, 184)
-		static val WALL_BASE = new Color(125, 117, 103)
-		static val WALL_EDGE = new Color(87, 80, 69)
-		static val WALL_LIGHT = new Color(160, 151, 136)
+		static val FLOOR_BASE = new Color(240, 235, 225)  // Light beige floor
+		static val FLOOR_NOISE1 = new Color(250, 245, 235)  // Lighter highlight
+		static val FLOOR_NOISE2 = new Color(230, 225, 215)  // Slight shadow
+		static val WALL_BASE = new Color(60, 60, 60)  // Dark gray walls
+		static val WALL_EDGE = new Color(40, 40, 40)  // Darker edge
+		static val WALL_LIGHT = new Color(80, 80, 80)  // Slight highlight
 		static val CRATE_BASE = new Color(176, 134, 84)
 		static val CRATE_EDGE = new Color(111, 80, 42)
 		static val CRATE_STRAP = new Color(79, 55, 31)
-		static val GOAL_BASE = new Color(171, 206, 187)
-		static val GOAL_RING = new Color(39, 110, 88)
+		// Darker colors for boxes on target (exit)
+		static val CRATE_ON_TARGET_BASE = new Color(100, 70, 40)
+		static val CRATE_ON_TARGET_EDGE = new Color(60, 40, 20)
+		static val CRATE_ON_TARGET_STRAP = new Color(40, 25, 15)
+		// Exit/goal colors - green square tile with border
+		static val GOAL_BASE = new Color(76, 175, 80)  // Green base
+		static val GOAL_BORDER = new Color(27, 94, 32)  // Dark green border
+		static val GOAL_HIGHLIGHT = new Color(129, 199, 132)  // Light green highlight
+		static val GOAL_INNER = new Color(56, 142, 60)  // Inner darker green
 		static val SHADOW = new Color(0, 0, 0, 45)
-		static val WORKER_BODY = new Color(63, 116, 184)
-		static val WORKER_OUTLINE = new Color(26, 48, 76)
-		static val WORKER_HELMET = new Color(243, 192, 56)
-		static val WORKER_SKIN = new Color(241, 218, 189)
-		static val WORKER_STRAP = new Color(226, 238, 250, 140)
+		// Omani agent colors - dishdasha (traditional white robe)
+		static val DISHDASHA_WHITE = new Color(255, 255, 255)  // White dishdasha
+		static val DISHDASHA_SHADOW = new Color(240, 240, 240)  // Light shadow on robe
+		static val DISHDASHA_FOLD = new Color(230, 230, 230)  // Fold lines
+		static val AGENT_SKIN = new Color(210, 180, 140)  // Skin tone
+		static val AGENT_OUTLINE = new Color(50, 50, 50)  // Dark outline
+		static val KUMMA_COLOR = new Color(200, 200, 200)  // Kumma (traditional cap) - light gray
+		static val KUMMA_BAND = new Color(100, 100, 100)  // Band on kumma
 
 		var objects : Map<Point2i, sokobanObject>
 		var time = new AtomicInteger
+		
+		// Store planned paths for visualization (box position -> path)
+		var plannedPaths = <Point2i, List<Point2i>>newHashMap
 
 		new {
-			this.background = Color::BLACK
+			// Use light floor color as background instead of black
+			this.background = FLOOR_BASE
 		}
 
-		def setObjects(time : int, objects : Map<Point2i, sokobanObject>) {
+		var exitPositions : Set<Point2i>
+		
+		/** Update planned paths for visualization. */
+		def updatePlannedPath(boxPosition : Point2i, path : List<Point2i>) {
+			synchronized (this.treeLock) {
+				if (path !== null && !path.isEmpty) {
+					this.plannedPaths.put(boxPosition, path)
+				} else {
+					this.plannedPaths.remove(boxPosition)
+				}
+			}
+		}
+		
+		/** Clear all planned paths. */
+		def clearPlannedPaths {
+			synchronized (this.treeLock) {
+				this.plannedPaths.clear
+			}
+		}
+		
+		def setObjects(time : int, objects : Map<Point2i, sokobanObject>, exitPositions : Set<Point2i>) {
 			synchronized (this.treeLock) {
 				this.time.set(time)
 				this.objects = objects
+				this.exitPositions = exitPositions
 				repaint
 			}
 		}
@@ -259,18 +381,54 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 			var isEvenTime = (this.time.get % 2) == 0
 
 			if (this.objects !== null) {
+				// First, draw exit positions as cell properties (underneath objects)
+				if (this.exitPositions !== null) {
+					for (exitPos : this.exitPositions) {
+						px = CELL_WIDTH * exitPos.x
+						py = CELL_HEIGHT * exitPos.y
+						drawGoal(g2d, px, py, isEvenTime)
+					}
+				}
+				
+				// Draw floor for all cells first (replaces black background)
+				for (entry : this.objects.entrySet) {
+					var pos = entry.key
+					px = CELL_WIDTH * pos.x
+					py = CELL_HEIGHT * pos.y
+					// Draw floor unless there's an exit (exit will be drawn separately)
+					if (this.exitPositions === null || !this.exitPositions.contains(pos)) {
+						drawFloor(g2d, px, py)
+					}
+				}
+				
+				// Draw planned paths (trails) before objects for debugging
+				synchronized (this.treeLock) {
+					if (this.plannedPaths !== null && !this.plannedPaths.isEmpty) {
+						for (entry : this.plannedPaths.entrySet) {
+							var path = entry.value
+							if (path !== null && !path.isEmpty) {
+								drawPathTrail(g2d, path)
+							}
+						}
+					}
+				}
+				
+				// Then draw objects on top
 				for (entry : this.objects.entrySet) {
 					var pos = entry.key
 					var obj = entry.value
 					px = CELL_WIDTH * pos.x
 					py = CELL_HEIGHT * pos.y
-					drawFloor(g2d, px, py)
 					if (obj instanceof WallObject) {
 						drawWall(g2d, px, py)
+					} else if (obj instanceof BoxObject) {
+						// Draw box with darker color if on target
+						var isOnTarget = (obj as BoxObject).isOnTarget
+						drawCrate(g2d, px, py, isEvenTime, isOnTarget)
 					} else if (obj instanceof sokobanBody) {
 						drawWorker(g2d, px, py)
 					} else if (obj instanceof GhostBody) {
-						drawCrate(g2d, px, py, isEvenTime)
+						drawCrate(g2d, px, py, isEvenTime, false)
 					} //else if (obj instanceof PillObject) {
 						//drawGoal(g2d, px, py, obj.superPill || isEvenTime)
 					//}
@@ -291,88 +449,211 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 		}
 
 		def drawWall(g2d : Graphics2D, px : int, py : int) {
+			// Simple dark gray wall
 			g2d.color = WALL_BASE
 			g2d.fillRect(px, py, CELL_WIDTH, CELL_HEIGHT)
+			// Subtle edge highlight
 			g2d.color = WALL_LIGHT
 			g2d.drawLine(px, py, px + CELL_WIDTH - 1, py)
 			g2d.drawLine(px, py, px, py + CELL_HEIGHT - 1)
+			// Darker edge shadow
 			g2d.color = WALL_EDGE
 			g2d.drawLine(px, py + CELL_HEIGHT - 1, px + CELL_WIDTH - 1, py + CELL_HEIGHT - 1)
 			g2d.drawLine(px + CELL_WIDTH - 1, py, px + CELL_WIDTH - 1, py + CELL_HEIGHT - 1)
-			g2d.color = new Color(0, 0, 0, 35)
-			var half = CELL_HEIGHT / 2
-			var quarter = CELL_WIDTH / 4
-			g2d.drawLine(px, py + half, px + CELL_WIDTH - 1, py + half)
-			g2d.drawLine(px + quarter, py, px + quarter, py + half)
-			g2d.drawLine(px + 2 * quarter, py + half, px + 2 * quarter, py + CELL_HEIGHT - 1)
-			g2d.drawLine(px + 3 * quarter, py, px + 3 * quarter, py + half)
 		}
 
-		def drawCrate(g2d : Graphics2D, px : int, py : int, glow : boolean) {
-			g2d.color = SHADOW
-			g2d.fillRoundRect(px + CELL_WIDTH / 10, py + CELL_HEIGHT / 10,
-				CELL_WIDTH - CELL_WIDTH / 7, CELL_HEIGHT - CELL_HEIGHT / 7, 6, 6)
+		def drawCrate(g2d : Graphics2D, px : int, py : int, glow : boolean, isOnTarget : boolean) {
+			// Enhanced box rendering with better shadows and highlights
+			var shadowOffset = Math::max(1, CELL_WIDTH / 15)
+			g2d.color = new Color(0, 0, 0, 60)  // Softer shadow
+			g2d.fillRoundRect(px + shadowOffset, py + shadowOffset,
+				CELL_WIDTH - shadowOffset, CELL_HEIGHT - shadowOffset, 6, 6)
+			
 			var pad = Math::max(2, CELL_WIDTH / 8)
 			var w = CELL_WIDTH - 2 * pad
 			var h = CELL_HEIGHT - 2 * pad
-			g2d.color = CRATE_BASE
-			g2d.fillRoundRect(px + pad, py + pad, w, h, 8, 8)
-			g2d.color = CRATE_EDGE
-			g2d.drawRoundRect(px + pad, py + pad, w, h, 8, 8)
-			g2d.color = CRATE_STRAP
+			
+			// Use darker colors if box is on target (exit)
+			if (isOnTarget) {
+				g2d.color = CRATE_ON_TARGET_BASE
+				g2d.fillRoundRect(px + pad, py + pad, w, h, 8, 8)
+				g2d.color = CRATE_ON_TARGET_EDGE
+				g2d.drawRoundRect(px + pad, py + pad, w, h, 8, 8)
+				// Thicker edge for completed boxes
+				g2d.drawRoundRect(px + pad - 1, py + pad - 1, w + 2, h + 2, 8, 8)
+				g2d.color = CRATE_ON_TARGET_STRAP
+			} else {
+				g2d.color = CRATE_BASE
+				g2d.fillRoundRect(px + pad, py + pad, w, h, 8, 8)
+				g2d.color = CRATE_EDGE
+				g2d.drawRoundRect(px + pad, py + pad, w, h, 8, 8)
+				g2d.color = CRATE_STRAP
+			}
+			
+			// Horizontal straps (wooden crate detail)
 			var strap = Math::max(2, CELL_WIDTH / 12)
 			g2d.fillRect(px + pad, py + pad + h / 3, w, strap)
 			g2d.fillRect(px + pad, py + pad + 2 * h / 3, w, strap)
+			
+			// Top highlight for 3D effect
 			if (glow) {
-				g2d.color = new Color(255, 255, 255, 35)
-				g2d.drawLine(px + pad + 3, py + pad + 3, px + pad + w - 3, py + pad + 3)
+				g2d.color = new Color(255, 255, 255, 40)
+				g2d.drawLine(px + pad + 2, py + pad + 2, px + pad + w - 2, py + pad + 2)
+				// Corner highlights
+				g2d.drawLine(px + pad + 2, py + pad + 2, px + pad + 2, py + pad + h / 3)
+				g2d.drawLine(px + pad + w - 2, py + pad + 2, px + pad + w - 2, py + pad + h / 3)
 			}
 		}
 
 		def drawWorker(g2d : Graphics2D, px : int, py : int) {
-			var pad = Math::max(2, CELL_WIDTH / 10)
+			// Draw Omani agent in dishdasha (traditional white robe)
+			var pad = Math::max(2, CELL_WIDTH / 12)
+			
+			// Shadow under agent
 			g2d.color = SHADOW
-			g2d.fillOval(px + pad + CELL_WIDTH / 10, py + CELL_HEIGHT - pad - CELL_HEIGHT / 5,
-				CELL_WIDTH - 2 * pad - CELL_WIDTH / 6, CELL_HEIGHT / 4)
-			var torsoW = CELL_WIDTH - 2 * pad
-			var torsoH = (CELL_HEIGHT * 0.55) as int
-			var torsoX = px + pad
-			var torsoY = py + CELL_HEIGHT - torsoH - pad
-			g2d.color = WORKER_BODY
-			g2d.fillRoundRect(torsoX, torsoY, torsoW, torsoH, pad * 2, pad * 2)
-			g2d.color = WORKER_OUTLINE
-			g2d.drawRoundRect(torsoX, torsoY, torsoW, torsoH, pad * 2, pad * 2)
-			var armW = Math::max(3, CELL_WIDTH / 6)
-			var armH = Math::max(4, CELL_HEIGHT / 3)
-			g2d.color = WORKER_BODY
-			g2d.fillRoundRect(px + pad / 2, torsoY + pad, armW, armH, pad, pad)
-			g2d.fillRoundRect(px + CELL_WIDTH - pad / 2 - armW, torsoY + pad, armW, armH, pad, pad)
-			g2d.color = WORKER_STRAP
-			g2d.fillRect(torsoX + torsoW / 3, torsoY + pad, Math::max(2, torsoW / 6), torsoH - 2 * pad)
-			var headD = (CELL_WIDTH * 0.45) as int
+			g2d.fillOval(px + pad + CELL_WIDTH / 10, py + CELL_HEIGHT - pad - CELL_HEIGHT / 6,
+				CELL_WIDTH - 2 * pad - CELL_WIDTH / 6, CELL_HEIGHT / 5)
+			
+			// Dishdasha (long white robe) - main body
+			var robeW = CELL_WIDTH - 2 * pad
+			var robeH = (CELL_HEIGHT * 0.65) as int
+			var robeX = px + pad
+			var robeY = py + CELL_HEIGHT - robeH - pad
+			
+			// Main robe body (white)
+			g2d.color = DISHDASHA_WHITE
+			g2d.fillRect(robeX, robeY, robeW, robeH)
+			g2d.color = AGENT_OUTLINE
+			g2d.drawRect(robeX, robeY, robeW, robeH)
+			
+			// Vertical fold lines on dishdasha (traditional detail)
+			var foldX1 = robeX + robeW / 3
+			var foldX2 = robeX + 2 * robeW / 3
+			g2d.color = DISHDASHA_FOLD
+			g2d.drawLine(foldX1, robeY, foldX1, robeY + robeH)
+			g2d.drawLine(foldX2, robeY, foldX2, robeY + robeH)
+			
+			// Slight shadow on robe for depth
+			g2d.color = DISHDASHA_SHADOW
+			g2d.fillRect(robeX + 1, robeY + robeH - 3, robeW - 2, 2)
+			
+			// Head (with kumma - traditional cap)
+			var headD = (CELL_WIDTH * 0.4) as int
 			var headX = px + (CELL_WIDTH - headD) / 2
-			var headY = torsoY - headD / 2
-			g2d.color = WORKER_SKIN
+			var headY = robeY - headD / 2
+			
+			// Face
+			g2d.color = AGENT_SKIN
 			g2d.fillOval(headX, headY, headD, headD)
-			g2d.color = WORKER_OUTLINE
+			g2d.color = AGENT_OUTLINE
 			g2d.drawOval(headX, headY, headD, headD)
-			var helmetH = Math::max(4, (headD * 0.55) as int)
-			var helmetY = headY - helmetH / 3
-			g2d.color = WORKER_HELMET
-			g2d.fillOval(headX, helmetY, headD, helmetH)
-			g2d.color = WORKER_OUTLINE
-			g2d.drawOval(headX, helmetY, headD, helmetH)
+			
+			// Kumma (traditional Omani cap) - circular cap on head
+			var kummaD = (headD * 0.7) as int
+			var kummaX = headX + (headD - kummaD) / 2
+			var kummaY = headY - kummaD / 3
+			g2d.color = KUMMA_COLOR
+			g2d.fillOval(kummaX, kummaY, kummaD, kummaD)
+			g2d.color = AGENT_OUTLINE
+			g2d.drawOval(kummaX, kummaY, kummaD, kummaD)
+			
+			// Band on kumma (decorative detail)
+			var bandY = kummaY + kummaD / 3
+			g2d.color = KUMMA_BAND
+			g2d.fillRect(kummaX + 2, bandY, kummaD - 4, 2)
 		}
 
 		def drawGoal(g2d : Graphics2D, px : int, py : int, pulse : boolean) {
+			// Draw green square goal tile (door-like shape)
+			// Base green tile
 			g2d.color = GOAL_BASE
 			g2d.fillRect(px, py, CELL_WIDTH, CELL_HEIGHT)
-			var ringPad = Math::max(3, CELL_WIDTH / 6)
-			g2d.color = GOAL_RING
-			g2d.drawOval(px + ringPad, py + ringPad, CELL_WIDTH - 2 * ringPad, CELL_HEIGHT - 2 * ringPad)
-			var dotD = Math::max(4, CELL_WIDTH / 4)
-			if(pulse) dotD += 2
-			g2d.fillOval(px + (CELL_WIDTH - dotD) / 2, py + (CELL_HEIGHT - dotD) / 2, dotD, dotD)
+			
+			// Dark green border
+			var borderWidth = Math::max(2, CELL_WIDTH / 8)
+			g2d.color = GOAL_BORDER
+			g2d.fillRect(px, py, CELL_WIDTH, borderWidth)  // Top
+			g2d.fillRect(px, py + CELL_HEIGHT - borderWidth, CELL_WIDTH, borderWidth)  // Bottom
+			g2d.fillRect(px, py, borderWidth, CELL_HEIGHT)  // Left
+			g2d.fillRect(px + CELL_WIDTH - borderWidth, py, borderWidth, CELL_HEIGHT)  // Right
+			
+			// Inner darker green square (door-like effect)
+			var innerPad = Math::max(3, CELL_WIDTH / 5)
+			g2d.color = GOAL_INNER
+			g2d.fillRect(px + innerPad, py + innerPad, 
+				CELL_WIDTH - 2 * innerPad, CELL_HEIGHT - 2 * innerPad)
+			
+			// Light green highlight (pulsing effect)
+			if (pulse) {
+				var highlightPad = Math::max(2, CELL_WIDTH / 6)
+				g2d.color = GOAL_HIGHLIGHT
+				g2d.fillRect(px + highlightPad, py + highlightPad,
+					CELL_WIDTH - 2 * highlightPad, CELL_HEIGHT - 2 * highlightPad)
+			}
+			
+			// Center dot/indicator
+			var dotSize = Math::max(3, CELL_WIDTH / 6)
+			g2d.color = GOAL_BORDER
+			g2d.fillOval(px + (CELL_WIDTH - dotSize) / 2, py + (CELL_HEIGHT - dotSize) / 2, 
+				dotSize, dotSize)
+		}
+		
+		/** Draw path trail for debugging - shows the planned path from box to exit. */
+		def drawPathTrail(g2d : Graphics2D, path : List<Point2i>) {
+			if (path === null || path.isEmpty) {
+				return
+			}
+			
+			// Path trail color - semi-transparent blue
+			var pathColor = new Color(100, 150, 255, 120)  // Light blue with transparency
+			var pathLineColor = new Color(50, 100, 200, 180)  // Darker blue for lines
+			var startColor = new Color(0, 255, 0, 150)  // Green for start (box)
+			var endColor = new Color(255, 0, 0, 150)  // Red for end (exit)
+			
+			g2d.stroke = new java.awt.BasicStroke(2.0f)
+			
+			// Draw path segments (lines between consecutive points)
+			for (i : 0 ..< path.size - 1) {
+				var from = path.get(i)
+				var to = path.get(i + 1)
+				
+				var fromX = CELL_WIDTH * from.x + DEMI_CELL_WIDTH
+				var fromY = CELL_HEIGHT * from.y + DEMI_CELL_HEIGHT
+				var toX = CELL_WIDTH * to.x + DEMI_CELL_WIDTH
+				var toY = CELL_HEIGHT * to.y + DEMI_CELL_HEIGHT
+				
+				// Draw line
+				g2d.color = pathLineColor
+				g2d.drawLine(fromX, fromY, toX, toY)
+			}
+			
+			// Draw path nodes (circles at each point)
+			for (i : 0 ..< path.size) {
+				var point = path.get(i)
+				var centerX = CELL_WIDTH * point.x + DEMI_CELL_WIDTH
+				var centerY = CELL_HEIGHT * point.y + DEMI_CELL_HEIGHT
+				var nodeSize = Math::max(4, CELL_WIDTH / 5)
+				
+				if (i == 0) {
+					// Start point (box position) - green circle
+					g2d.color = startColor
+					g2d.fillOval(centerX - nodeSize / 2, centerY - nodeSize / 2, nodeSize, nodeSize)
+					g2d.color = new Color(0, 200, 0, 200)
+					g2d.drawOval(centerX - nodeSize / 2, centerY - nodeSize / 2, nodeSize, nodeSize)
+				} else if (i == path.size - 1) {
+					// End point (exit) - red circle
+					g2d.color = endColor
+					g2d.fillOval(centerX - nodeSize / 2, centerY - nodeSize / 2, nodeSize, nodeSize)
+					g2d.color = new Color(200, 0, 0, 200)
+					g2d.drawOval(centerX - nodeSize / 2, centerY - nodeSize / 2, nodeSize, nodeSize)
+				} else {
+					// Intermediate points - blue circles
+					g2d.color = pathColor
+					g2d.fillOval(centerX - nodeSize / 2, centerY - nodeSize / 2, nodeSize, nodeSize)
+					g2d.color = pathLineColor
+					g2d.drawOval(centerX - nodeSize / 2, centerY - nodeSize / 2, nodeSize, nodeSize)
+				}
+			}
 		}
 
 	}

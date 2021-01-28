@@ -25,13 +25,31 @@ import java.lang.reflect.Array
 import java.util.ArrayList
 import java.util.Collection
 import java.util.Collections
+import java.util.HashSet
+import java.util.LinkedList
 import java.util.List
 import java.util.Random
 import java.util.TreeMap
 import java.util.UUID
 
-/** 
- * Define the maze.
+/**
+ * Sokoban puzzle environment - a discrete, grid-based state transformation world.
+ * 
+ * IMPORTANT: This is NOT a maze. Sokoban is about state transformation, not navigation.
+ * 
+ * Key differences from mazes:
+ * - Maze: Tests where you can go (navigation problem)
+ * - Sokoban: Tests whether you should go there (state transformation problem)
+ * 
+ * Characteristics:
+ * - Discrete 2D grid (each cell contains exactly one thing)
+ * - Fully observable (no fog of war, no randomness, no hidden state)
+ * - Deterministic (same action from same state → same result)
+ * - State changes permanently with every move (often irreversible)
+ * - Goal: All boxes on target cells (player position irrelevant)
+ * 
+ * Static elements: Walls (immovable), Target locations (goals)
+ * Dynamic elements: Player (agent), Boxes (pushable artifacts)
  * 
  * @author $Author: sgalland$
  * @version $FullVersion$
@@ -40,15 +58,20 @@ import java.util.UUID
  */
 class Maze {
 
-		/** Max number of super pills in the world.
-		 */
+	/** Max number of super pills in the world.
+	 */
 	static val MAX_SUPER_PILLS = 5
 
 	/** Matrix of the objects.
 	 */
-	val grid : sokobanObject[][]
+	val grid : sokobanObject[][] 
 
 	val bodies = new TreeMap<UUID, AgentBody>
+
+	/** Set of exit positions (cell properties, not objects).
+	 * Exits are stored as cell coordinates, allowing boxes to be placed on them.
+	 */
+	val exitPositions = <Point2i>newHashSet
 
 	/** Width of the world.
 	 */
@@ -61,8 +84,11 @@ class Maze {
 	/** Random generator.
 	 */
 	val random = new Random
+	
+	/** Track which agent-count layout is currently active. */
+	var activeAgentLayoutCount = 0
 
-	/** 
+	/**
 	 * @param width is the width of the world.
 	 * @param height is the height of the world.
 	 */
@@ -74,92 +100,697 @@ class Maze {
 		buildWorld(this.width, this.height);
 	}
 
-	/** Build the maze and fill the spaces with pills.
+	/** Build the Sokoban puzzle world.
 	 * 
-	 * @param width width of the maze.
-	 * @param height height of the maze.
+	 * Creates a Sokoban-style puzzle layout with deterministic wall patterns:
+	 * - Outer walls around the perimeter
+	 * - One of 3 predefined simple wall layouts (selected at initialization)
+	 * - Walls are sparse and don't block all paths
+	 * 
+	 * @param width width of the puzzle grid.
+	 * @param height height of the puzzle grid.
 	 */
 	private def buildWorld(width : int, height : int) : void {
-		// buildMaze_recursiveAlgorithm(0, width, 0, height);
-		buildMaze
-
-		for (var i = 0; i < width; i++) {
-			for (var j = 0; j < height; j++) {
-				if (this.grid.get(i).get(j) === null) {
-					this.grid.get(i).set(j, new PillObject(i, j, this, false))
-				}
-			}
-		}
-
-		for (var i = 0; i < MAX_SUPER_PILLS; i++) {
-			var x = this.random.nextInt(width)
-			var y = this.random.nextInt(height)
-			while (!canMoveInside(x, y)) {
-				x = this.random.nextInt(width)
-				y = this.random.nextInt(height)
-			}
-			this.grid.get(x).set(y, new PillObject(x, y, this, true))
-		}
+		// Build base layout (outer walls only)
+		// Agent-specific layouts are selected after agents spawn.
+		buildSimpleOpenLayout
 	}
 
-	/** Build the maze with the Prim's algorithm.
+	/** Build a randomly generated Sokoban layout.
+	 * 
+	 * Creates a Sokoban-style puzzle with:
+	 * - Outer walls around edges
+	 * - Random wall placement inside (20-30% wall density)
+	 * - Ensures connectivity (all areas reachable)
+	 * - Walkable paths for agents and boxes
 	 */
-	private def buildMaze : void {
-		// Fill the maze with walls.
+	private def buildRandomSokobanLayout : void {
+		// Fill everything with walls first
 		for (var i = 0; i < this.width; i++) {
 			for (var j = 0; j < this.height; j++) {
 				this.grid.get(i).set(j, new WallObject(i, j, this))
 			}
 		}
 		
-		// Declare the list of walls from which it could be possible to dig.
-		var walls = new ArrayList<PrimWall>
+		// Create outer walls (border)
+		// Keep inner area (1-cell border) for random generation
+		for (var i = 1; i < this.width - 1; i++) {
+			for (var j = 1; j < this.height - 1; j++) {
+				// Randomly place walls (25% probability)
+				// This creates a maze-like structure while ensuring connectivity
+				if (this.random.nextDouble < 0.25) {
+					// Place wall
+					this.grid.get(i).set(j, new WallObject(i, j, this))
+				} else {
+					// Empty floor space
+					this.grid.get(i).set(j, null)
+				}
+			}
+		}
 		
-		// Select a random cell and prepare to dig.
-		var x = this.random.nextInt(this.width)
-		var y = this.random.nextInt(this.height)
-		this.grid.get(x).set(y, null)
-		walls.add(new PrimWall(x, y - 1, x, y - 2, x - 1, y - 2, x, y - 3, x + 1, y - 2))
-		walls.add(new PrimWall(x, y + 1, x, y + 2, x - 1, y + 2, x, y + 3, x + 1, y + 2))
-		walls.add(new PrimWall(x - 1, y, x - 2, y, x - 2, y + 1, x - 3, y, x - 2, y - 1))
-		walls.add(new PrimWall(x + 1, y, x + 2, y, x + 2, y - 1, x + 3, y, x + 2, y + 1))
+		// Ensure connectivity: use flood-fill to verify all cells are reachable
+		// If not, remove some walls to create paths
+		ensureConnectivity
 		
-		// Loop 'til no more place for digging
-		while (!walls.empty) {
-			// Select a wall to dig inside
-			var diggeableWall = walls.remove(this.random.nextInt(walls.size))
-			// Check if the wall could be digged
-			if (diggeableWall.corridor.x >= 0 && diggeableWall.corridor.x < this.width &&
-				diggeableWall.corridor.y >= 0 && diggeableWall.corridor.y < this.height &&
-				this.grid.get(diggeableWall.corridor.x).get(diggeableWall.corridor.y) instanceof WallObject &&
-				this.grid.get(diggeableWall.passage.x).get(diggeableWall.passage.y) instanceof WallObject) {
-				// Dig the walls
-				this.grid.get(diggeableWall.passage.x).set(diggeableWall.passage.y, null)
-				this.grid.get(diggeableWall.corridor.x).set(diggeableWall.corridor.y, null)
-				// Add the candidates
-				addWallCandidate(walls, diggeableWall.corridor, diggeableWall.passageCandidate1)
-				addWallCandidate(walls, diggeableWall.corridor, diggeableWall.passageCandidate2)
-				addWallCandidate(walls, diggeableWall.corridor, diggeableWall.passageCandidate3)
+		// Ensure minimum walkable area (at least 50% of inner area should be walkable)
+		ensureMinimumWalkableArea
+	}
+	
+	/** Build a simple open layout with NO INNER WALLS (for testing).
+	 * 
+	 * Creates a completely open environment:
+	 * - Outer walls around edges only
+	 * - All inner cells are empty (walkable)
+	 * - No obstacles to block movement
+	 * 
+	 * This makes it easier to test if agents can move and coordinate.
+	 */
+	private def buildSimpleOpenLayout : void {
+		// Fill everything with walls first
+		for (var i = 0; i < this.width; i++) {
+			for (var j = 0; j < this.height; j++) {
+				this.grid.get(i).set(j, new WallObject(i, j, this))
+			}
+		}
+		
+		// Create outer walls (border only)
+		// Leave all inner cells as empty floor space
+		for (var i = 1; i < this.width - 1; i++) {
+			for (var j = 1; j < this.height - 1; j++) {
+				// All inner cells are empty (no walls)
+				this.grid.get(i).set(j, null)
+			}
+		}
+		
+		// No need for connectivity check - everything is connected
+		// No need for minimum walkable area - everything is walkable
+	}
+	
+	/** Place a wall at the given position if it's safe.
+	 * 
+	 * @param x the x coordinate
+	 * @param y the y coordinate
+	 * @return true if wall was placed, false if position is invalid
+	 */
+	private def placeWall(x : int, y : int) : boolean {
+		// Check bounds (must be in inner area, not on border)
+		if (x <= 1 || x >= this.width - 2 || y <= 1 || y >= this.height - 2) {
+			return false
+		}
+		
+		// Do not block exits (cell properties)
+		if (this.exitPositions.contains(new Point2i(x, y))) {
+			return false
+		}
+		
+		// Check if position is already occupied
+		if (this.grid.get(x).get(y) !== null) {
+			return false
+		}
+		
+		// Place wall
+		this.grid.get(x).set(y, new WallObject(x, y, this))
+		return true
+	}
+
+	/** Clear inner walls while preserving outer borders and objects. */
+	private def clearInnerWalls : void {
+		for (var i = 1; i < this.width - 1; i++) {
+			for (var j = 1; j < this.height - 1; j++) {
+				if (this.grid.get(i).get(j) instanceof WallObject) {
+					this.grid.get(i).set(j, null)
+				}
 			}
 		}
 	}
 
-	private def addWallCandidate(walls : List<PrimWall>, corridor : Point2i, candidate : Point2i) : void {
-		val v = candidate - corridor
-
-		val r = v.clone
-		r.perpendicularize
-
-		var pw = new PrimWall(
-				// new passage
-		corridor.x + v.x, corridor.y + v.y, // new corridor
-		corridor.x + 2 * v.x, corridor.y + 2 * v.y, // new candidate 1
-				corridor.x + 3 * v.x, corridor.y + 3 * v.y, // new candidate 2
-				corridor.x + 2 * v.x + r.x, corridor.y + 2 * v.y + r.y, // new candidate 3
-		corridor.x + 2 * v.x - r.x, corridor.y + 2 * v.y - r.y)
-
-		walls += pw
+	/** Place a straight line of walls. */
+	private def placeWallLine(startX : int, startY : int, dx : int, dy : int, length : int) : void {
+		for (var i = 0; i < length; i++) {
+			var x = startX + (dx * i)
+			var y = startY + (dy * i)
+			placeWall(x, y)
+		}
 	}
+
+	/** Place a small rectangular block of walls. */
+	private def placeWallBlock(startX : int, startY : int, blockWidth : int, blockHeight : int) : void {
+		for (var i = 0; i < blockWidth; i++) {
+			for (var j = 0; j < blockHeight; j++) {
+				placeWall(startX + i, startY + j)
+			}
+		}
+	}
+
+	/** Place a vertical wall segment with one or two "doors" (gaps).
+	 */
+	private def placeVerticalWallWithDoors(x : int, yStart : int, yEnd : int, doorY1 : int, doorY2 : int) : void {
+		var ys = Math::max(2, Math::min(yStart, this.height - 3))
+		var ye = Math::max(2, Math::min(yEnd, this.height - 3))
+		if (ys > ye) {
+			var tmp = ys
+			ys = ye
+			ye = tmp
+		}
+		for (var y = ys; y <= ye; y++) {
+			if (y != doorY1 && y != doorY2) {
+				placeWall(x, y)
+			}
+		}
+	}
+
+	/** Place a horizontal wall segment with one or two "doors" (gaps).
+	 */
+	private def placeHorizontalWallWithDoors(y : int, xStart : int, xEnd : int, doorX1 : int, doorX2 : int) : void {
+		var xs = Math::max(2, Math::min(xStart, this.width - 3))
+		var xe = Math::max(2, Math::min(xEnd, this.width - 3))
+		if (xs > xe) {
+			var tmp = xs
+			xs = xe
+			xe = tmp
+		}
+		for (var x = xs; x <= xe; x++) {
+			if (x != doorX1 && x != doorX2) {
+				placeWall(x, y)
+			}
+		}
+	}
+
+	/** 
+	 * Place a rectangular "room" perimeter (walls), with exactly one door on one side.
+	 * doorSide: 0=TOP, 1=RIGHT, 2=BOTTOM, 3=LEFT
+	 * doorOffset is along that side (from 1..(len-2)), auto-clamped.
+	 */
+	private def placeRoom(x : int, y : int, w : int, h : int, doorSide : int, doorOffset : int) : void {
+		// Clamp room position so it fits inside [2..width-3] / [2..height-3]
+		var ww = Math::max(4, w)
+		var hh = Math::max(4, h)
+
+		var maxX0 = this.width - ww - 2
+		var maxY0 = this.height - hh - 2
+		var x0 = Math::max(2, Math::min(x, Math::max(2, maxX0)))
+		var y0 = Math::max(2, Math::min(y, Math::max(2, maxY0)))
+		var x1 = x0 + ww - 1
+		var y1 = y0 + hh - 1
+
+		// Door location
+		var doorX = x0 + Math::max(1, Math::min(doorOffset, ww - 2))
+		var doorY = y0 + Math::max(1, Math::min(doorOffset, hh - 2))
+
+		// Top / Bottom
+		for (var xx = x0; xx <= x1; xx++) {
+			if (!(doorSide == 0 && xx == doorX)) {
+				placeWall(xx, y0)
+			}
+			if (!(doorSide == 2 && xx == doorX)) {
+				placeWall(xx, y1)
+			}
+		}
+
+		// Left / Right
+		for (var yy = y0; yy <= y1; yy++) {
+			if (!(doorSide == 3 && yy == doorY)) {
+				placeWall(x0, yy)
+			}
+			if (!(doorSide == 1 && yy == doorY)) {
+				placeWall(x1, yy)
+			}
+		}
+	}
+
+	/** 
+	 * Builds a classic “maze columns” pattern:
+	 * vertical wall columns with alternating door gaps → long winding corridors.
+	 */
+	private def buildAlternatingColumnsMaze(step : int, gapSize : int, startX : int) : void {
+		if (this.width < 9 || this.height < 9) {
+			return
+		}
+
+		var s = Math::max(3, step)
+		var g = Math::max(1, gapSize)
+		var x = Math::max(3, startX)
+		var flip = false
+
+		while (x < this.width - 3) {
+			// Door gap alternates between top-ish and bottom-ish
+			var gapTop = Math::max(3, this.height / 4)
+			var gapBottom = Math::max(3, this.height - 4 - g)
+
+			var doorStart = if(flip) gapBottom else gapTop
+			var doorY1 = doorStart
+			var doorY2 = doorStart + g
+
+			placeVerticalWallWithDoors(x, 2, this.height - 3, doorY1, doorY2)
+
+			flip = !flip
+			x += s
+		}
+	}
+
+	/** Sprinkle small 2x2 pillars to reduce open space but keep movement possible.
+	 */
+	private def sprinklePillars(count : int) : void {
+		var c = Math::max(0, count)
+		for (var k = 0; k < c; k++) {
+			var px = 2 + this.random.nextInt(Math::max(1, this.width - 5))
+			var py = 2 + this.random.nextInt(Math::max(1, this.height - 5))
+		placeWallBlock(px, py, 2, 2)
+	}
+}
+
+private def findRandomEmptyInnerCell(avoidExitCells : boolean) : Point2i {
+	// Try random sampling first
+		var tries = 0
+		while (tries < 5000) {
+			var x = 1 + this.random.nextInt(Math::max(1, this.width - 2))
+			var y = 1 + this.random.nextInt(Math::max(1, this.height - 2))
+
+			// Keep a 1-cell margin away from borders (so 2..width-3 / 2..height-3)
+			if (x <= 1 || x >= this.width - 2 || y <= 1 || y >= this.height - 2) {
+				tries++
+				continue
+			}
+
+			if (this.grid.get(x).get(y) !== null) {
+				tries++
+				continue
+			}
+
+			var p = new Point2i(x, y)
+			if (avoidExitCells && this.exitPositions.contains(p)) {
+				tries++
+				continue
+			}
+		tries++
+			return p
+			
+		}
+
+		// Fallback: deterministic scan
+		for (var i = 2; i < this.width - 2; i++) {
+			for (var j = 2; j < this.height - 2; j++) {
+				if (this.grid.get(i).get(j) === null) {
+					var p = new Point2i(i, j)
+					if (!avoidExitCells || !this.exitPositions.contains(p)) {
+						return p
+					}
+				}
+			}
+		}
+
+	return null
+}
+
+
+	/** Update layout based on the current number of Sokoban agents. */
+	private def updateLayoutForAgentCount(agentCount : int) : void {
+		if (agentCount <= 0) {
+			return
+		}
+		var normalizedCount = Math::min(Math::max(agentCount, 1), 4)
+		if (normalizedCount == this.activeAgentLayoutCount) {
+			return
+		}
+		
+		clearInnerWalls
+		
+		switch (normalizedCount) {
+			case 1: {
+				var layoutIndex = this.random.nextInt(2)
+				switch (layoutIndex) {
+					case 0: buildLayout4 // Dual Lanes
+					case 1: buildLayout5 // Twin Corners
+					default: buildLayout4
+				}
+			}
+			case 2: {
+				var layoutIndex = this.random.nextInt(2)
+				switch (layoutIndex) {
+					case 0: buildLayout4  // Dual Lanes
+					case 1: buildLayout5  // Twin Corners
+					default: buildLayout4
+				}
+			}
+			case 3: {
+				var layoutIndex = this.random.nextInt(2)
+				switch (layoutIndex) {
+					case 0: buildLayout6  // Triad Islands
+					case 1: buildLayout7  // Zig-Zag Steps
+					default: buildLayout6
+				}
+			}
+			case 4: {
+				var layoutIndex = this.random.nextInt(2)
+				switch (layoutIndex) {
+					case 0: buildLayout8  // Quad Pillars
+					case 1: buildLayout9  // Ring Segments
+					default: buildLayout8
+				}
+			}
+			default: {
+				buildLayout0
+			}
+		}
+		
+		this.activeAgentLayoutCount = normalizedCount
+	}
+
+	/** Layout 0 (1 agent): Serpentine corridors + a few choke gates
+	 */
+	private def buildLayout0 : void {
+		// Main winding structure
+		buildAlternatingColumnsMaze(3, 1, 4)
+
+		// Two horizontal “gates” to create choke points
+		var yA = Math::max(4, this.height / 3)
+		var yB = Math::max(6, this.height * 2 / 3)
+		var doorA = Math::max(4, this.width / 4)
+		var doorB = Math::max(6, this.width * 3 / 4)
+		placeHorizontalWallWithDoors(yA, 2, this.width - 3, doorA, doorA + 1)
+		placeHorizontalWallWithDoors(yB, 2, this.width - 3, doorB, doorB - 1)
+
+		// A couple of small “blocking islands”
+		sprinklePillars(2)
+	}
+
+	/** Layout 1 (1 agent): Spiral-ish nested rooms (maze feel without full blockage)
+	 */
+	private def buildLayout1 : void {
+		if (this.width < 12 || this.height < 12) {
+			// fallback: dense zigzag if the map is small
+			buildAlternatingColumnsMaze(3, 1, 4)
+			return
+		}
+
+		var layers = Math::min((Math::min(this.width, this.height) - 8) / 2, 4)
+		if(layers < 2) layers = 2
+
+		for (var l = 0; l < layers; l++) {
+			var inset = 2 + (l * 2)
+			var rw = this.width - (inset * 2) - 1
+			var rh = this.height - (inset * 2) - 1
+			if (rw < 6 || rh < 6) {
+				break
+			}
+			var doorSide = l % 4
+			var doorOffset = if(doorSide == 0 || doorSide == 2) rw / 2 else rh / 2
+			placeRoom(inset, inset, rw, rh, doorSide, doorOffset)
+		}
+
+		// Add one internal “bar” to break direct lines of sight
+		var midX = Math::max(5, this.width / 2)
+		var midY = Math::max(5, this.height / 2)
+		placeVerticalWallWithDoors(midX, 3, this.height - 4, midY - 1, midY + 1)
+	}
+
+	/** Layout 2 (1 agent): Three rooms connected by corridors (doors offset)
+	 */
+	private def buildLayout2 : void {
+		var rw = Math::max(6, this.width / 3)
+		var rh = Math::max(6, this.height / 3)
+
+		// Top-left room (door on right)
+		placeRoom(3, 3, rw, rh, 1, rh / 2)
+
+		// Top-right room (door on left)
+		placeRoom(Math::max(3, this.width - rw - 3), 3, rw, rh, 3, rh / 2)
+
+		// Bottom-middle room (door on top)
+		placeRoom(Math::max(3, this.width / 2 - rw / 2), Math::max(3, this.height - rh - 3), rw, rh, 0, rw / 2)
+
+		// Connectors: partial walls with doors to force “hallway” routing
+		var yC = Math::max(5, this.height / 2)
+		placeHorizontalWallWithDoors(yC, 2, this.width - 3, this.width / 2, (this.width / 2) + 1)
+
+		sprinklePillars(1)
+	}
+
+	/** Layout 3 (1 agent): Dense alcoves + pockets (more dead ends)
+	 */
+	private def buildLayout3 : void {
+		// Alternating columns → base maze
+		buildAlternatingColumnsMaze(3, 1, 3)
+
+		// Add short “teeth” walls to create alcoves
+		var y = 4
+		while (y < this.height - 4) {
+			placeWallLine(3, y, 1, 0, Math::min(4, this.width - 6))
+			placeWallLine(Math::max(4, this.width - 6), y + 1, -1, 0, Math::min(4, this.width - 6))
+			y += 4
+		}
+
+		sprinklePillars(2)
+	}
+
+	/** Layout 4 (2 agents): Split map with multiple doors + zigzag inside each half
+	 */
+	private def buildLayout4 : void {
+	var splitX = Math::max(5, this.width / 2)
+
+		var laneX1 = Math::max(3, this.width / 3)
+		var laneX2 = Math::max(4, this.width * 2 / 3)
+		placeWallLine(laneX1, 3, 0, 1, 4)
+		placeWallLine(laneX2, Math::max(3, this.height / 2), 0, 1, 4)
+
+		var midY = Math::max(3, this.height / 2)
+		placeWallLine(4, midY, 1, 0, 4)
+		placeWallLine(13, 11, 1, 0, 8)
+		placeWallBlock(3, 3, 2, 2)
+	}
+
+	/** Layout 5 (2 agents): Two loops + cross choke points (forces coordination)
+	 */
+	private def buildLayout5 : void {
+		placeWallBlock(3, 3, 2, 2)
+		var rightBlockX = Math::max(3, this.width - 6)
+		placeWallBlock(rightBlockX, 3, 2, 2)
+		var yBridge = Math::max(5, this.height / 2)
+		var lowerY = Math::max(4, this.height - 5)
+		placeWallLine(5, lowerY, 1, 0, 4)
+		placeHorizontalWallWithDoors(yBridge, 2, this.width - 3, this.width / 2, (this.width / 2) + 1)
+	}
+
+	/** Layout 6 (3 agents): Three chambers with narrow-ish connectors
+	 */
+	private def buildLayout6 : void {
+		var rw = Math::max(6, this.width / 3)
+	var rh = Math::max(6, this.height / 3)
+
+		var midX = Math::max(4, this.width / 2)
+		var midY = Math::max(4, this.height / 2)
+		placeWallBlock(3, midY - 2, 2, 2)
+		placeWallBlock(midX - 1, 3, 2, 2)
+		placeWallBlock(Math::max(3, this.width - 6), Math::max(3, this.height - 6), 2, 2)
+
+		placeWallLine(midX + 2, midY, 0, 1, 3)
+	}
+
+	/** Layout 7 (3 agents): Dense zigzag maze (more corridors, fewer open plains)
+	 */
+	private def buildLayout7 : void {
+		placeWallLine(4, 4, 1, 0, 3)
+		placeWallLine(6, 6, 1, 0, 3)
+		placeWallLine(8, 8, 1, 0, 3)
+
+		var rightX = Math::max(4, this.width - 5)
+		var midY = Math::max(4, this.height / 2)
+		placeWallLine(rightX, midY - 1, 0, 1, 3)
+	}
+
+	/** Layout 8 (4 agents): Four quadrants + doors + inner clutter
+	 */
+	private def buildLayout8 : void {
+		var midX = Math::max(5, this.width / 2)
+		var midY = Math::max(5, this.height / 2)
+
+		// Central cross walls, each with 2 doors
+		placeVerticalWallWithDoors(midX, 2, this.height - 3, midY - 2, midY + 2)
+		placeHorizontalWallWithDoors(midY, 2, this.width - 3, midX - 2, midX + 2)
+
+		// Add small “quadrant” mazes
+		buildAlternatingColumnsMaze(4, 1, 3)
+
+		// Pillars in corners (keep movement but reduce openness)
+		placeWallBlock(3, 3, 2, 2)
+		placeWallBlock(Math::max(3, this.width - 6), 3, 2, 2)
+		placeWallBlock(3, Math::max(3, this.height - 6), 2, 2)
+		placeWallBlock(Math::max(3, this.width - 6), Math::max(3, this.height - 6), 2, 2)
+	}
+
+	/** Layout 9 (4 agents): “Donut” ring + spokes (maze ring around center)
+	 */
+	private def buildLayout9 : void {
+		var topY = Math::max(4, this.height / 2 - 3)
+		var bottomY = Math::max(4, this.height / 2 + 2)
+		placeWallLine(4, topY, 1, 0, 5)
+		placeWallLine(Math::max(4, this.width - 9), bottomY, 1, 0, 5)
+
+		var leftX = Math::max(4, this.width / 2 - 3)
+		var rightX = Math::max(4, this.width / 2 + 2)
+		placeWallLine(leftX, 4, 0, 1, 4)
+		placeWallLine(rightX, Math::max(4, this.height - 8), 0, 1, 4)
+	}
+	
+	/** Ensure all walkable cells are connected (reachable from each other).
+	 * Uses flood-fill algorithm to verify connectivity.
+	 */
+	private def ensureConnectivity : void {
+		// Find first walkable cell
+		var startX = -1
+		var startY = -1
+		for (var i = 1; i < this.width - 1; i++) {
+			for (var j = 1; j < this.height - 1; j++) {
+				if (this.grid.get(i).get(j) === null) {
+					startX = i
+					startY = j
+					break
+				}
+			}
+			if (startX >= 0) {
+				break
+			}
+		}
+		
+		if (startX < 0) {
+			// No walkable cells - create a small open area
+			for (var i = 1; i < Math::min(5, this.width - 1); i++) {
+				for (var j = 1; j < Math::min(5, this.height - 1); j++) {
+					this.grid.get(i).set(j, null)
+				}
+			}
+			return
+		}
+		
+		// Flood-fill from start position
+		var visited = new HashSet<Point2i>
+		var queue = new LinkedList<Point2i>
+		queue.add(new Point2i(startX, startY))
+		visited.add(new Point2i(startX, startY))
+		
+		val directions = #[
+			new Point2i(0, -1),  // NORTH
+			new Point2i(0, 1),   // SOUTH
+			new Point2i(-1, 0),  // WEST
+			new Point2i(1, 0)    // EAST
+		]
+		
+		while (!queue.isEmpty) {
+			var current = queue.poll
+			for (dir : directions) {
+				var nextX = current.x + dir.x
+				var nextY = current.y + dir.y
+				if (nextX >= 1 && nextX < this.width - 1 && nextY >= 1 && nextY < this.height - 1) {
+					var nextPos = new Point2i(nextX, nextY)
+					if (!visited.contains(nextPos) && this.grid.get(nextX).get(nextY) === null) {
+						visited.add(nextPos)
+						queue.add(nextPos)
+					}
+				}
+			}
+		}
+		
+		// If some walkable cells are not reachable, remove walls to create paths
+		var unreachable = new ArrayList<Point2i>
+		for (var i = 1; i < this.width - 1; i++) {
+			for (var j = 1; j < this.height - 1; j++) {
+				if (this.grid.get(i).get(j) === null) {
+					var pos = new Point2i(i, j)
+					if (!visited.contains(pos)) {
+						unreachable.add(pos)
+					}
+				}
+			}
+		}
+		
+		// Remove walls to connect unreachable areas (create paths)
+		for (unreachablePos : unreachable) {
+			// Find nearest reachable cell and create path
+			var nearestReachable : Point2i = null
+			var minDist = Integer::MAX_VALUE
+			for (reachablePos : visited) {
+				var dist = Math::abs(unreachablePos.x - reachablePos.x) + Math::abs(unreachablePos.y - reachablePos.y)
+				if (dist < minDist) {
+					minDist = dist
+					nearestReachable = reachablePos
+				}
+			}
+			
+			// Create path by removing walls between unreachable and nearest reachable
+			if (nearestReachable !== null) {
+				createPath(unreachablePos, nearestReachable)
+			}
+		}
+	}
+	
+	/** Create a path between two positions by removing walls.
+	 * Uses simple pathfinding to connect two points.
+	 */
+	private def createPath(from : Point2i, to : Point2i) : void {
+		var currentX = from.x
+		var currentY = from.y
+		var targetX = to.x
+		var targetY = to.y
+		
+		// Simple path: move horizontally first, then vertically
+		while (currentX != targetX || currentY != targetY) {
+			// Remove wall at current position if it exists
+			if (this.grid.get(currentX).get(currentY) instanceof WallObject) {
+				this.grid.get(currentX).set(currentY, null)
+			}
+			
+			// Move toward target
+			if (currentX < targetX) {
+				currentX++
+			} else if (currentX > targetX) {
+				currentX--
+			} else if (currentY < targetY) {
+				currentY++
+			} else if (currentY > targetY) {
+				currentY--
+			}
+		}
+		
+		// Remove wall at target position if it exists
+		if (this.grid.get(currentX).get(currentY) instanceof WallObject) {
+			this.grid.get(currentX).set(currentY, null)
+		}
+	}
+	
+	/** Ensure minimum walkable area (at least 50% of inner area).
+	 * Removes walls if walkable area is too small.
+	 */
+	private def ensureMinimumWalkableArea : void {
+		var walkableCount = 0
+		var totalInnerArea = (this.width - 2) * (this.height - 2)
+		var minWalkable = (totalInnerArea * 0.5) as int
+		
+		// Count walkable cells
+		for (var i = 1; i < this.width - 1; i++) {
+			for (var j = 1; j < this.height - 1; j++) {
+				if (this.grid.get(i).get(j) === null) {
+					walkableCount++
+				}
+			}
+		}
+		
+		// If walkable area is too small, remove some walls
+		if (walkableCount < minWalkable) {
+			var wallsToRemove = minWalkable - walkableCount
+			var removed = 0
+			for (var i = 1; i < this.width - 1 && removed < wallsToRemove; i++) {
+				for (var j = 1; j < this.height - 1 && removed < wallsToRemove; j++) {
+					if (this.grid.get(i).get(j) instanceof WallObject) {
+						// Remove wall if it doesn't create isolated cells
+						this.grid.get(i).set(j, null)
+						removed++
+					}
+				}
+			}
+		}
+	}
+	
+	// Removed: addWallCandidate - no longer needed with simple Sokoban layout
 
 	/** Replies if the cell at the given coordinates can receive a body.
 	 * 
@@ -170,12 +801,12 @@ class Maze {
 	 */
 	@Pure
 	synchronized def canMoveInside(x : int, y : int) : boolean {
-		x >= 0 && y >= 0 && x < this.width && y < this.height &&
-			(this.grid.get(x).get(y) === null || this.grid.get(x).get(y).pickable)
+		x >= 0 && y >= 0 && x < this.width && y < this.height
+		&& (this.grid.get(x).get(y) === null || this.grid.get(x).get(y).pickable)
 	}
 
 	/** Create a body of the given type.
-	 * 
+	 *
 	 * @param bodyType the type of the body.
 	 * @param agentId the identifier of the agent that will be linked to the body.
 	 * @param perceptionDistance the distance of perception.
@@ -200,8 +831,23 @@ class Maze {
 
 		this.grid.get(x).set(y, body)
 		this.bodies.put(id, body)
+		
+		if (body instanceof sokobanBody) {
+			updateLayoutForAgentCount(getSokobanBodyCount)
+		}
 
 		return body
+	}
+
+	/** Count autonomous Sokoban agents (excludes ghosts). */
+	private def getSokobanBodyCount : int {
+		var count = 0
+		for (body : this.bodies.values) {
+			if (body instanceof sokobanBody) {
+				count++
+			}
+		}
+		return count
 	}
 
 	/** Replies the number of bodies in the maze.
@@ -235,16 +881,28 @@ class Maze {
 	 * @return the object in the cell before the change.
 	 */
 	def setObjectAt(x : int, y : int, obj : sokobanObject) : sokobanObject {
-		if (x >= 0 && x < this.width && y >= 0 && y < this.height) {
-			var old = this.grid.get(x).get(y)
-			this.grid.get(x).set(y, obj)
+		var tx = x
+		var ty = y
+
+		// Randomize initial Box placement (ignores provided coordinates)
+		if (obj instanceof BoxObject) {
+			var p = findRandomEmptyInnerCell(true) // avoid exits + require empty cell
+			if (p !== null) {
+				tx = p.x
+				ty = p.y
+			}
+		}
+
+		if (tx >= 0 && tx < this.width && ty >= 0 && ty < this.height) {
+			var old = this.grid.get(tx).get(ty)
+			this.grid.get(tx).set(ty, obj)
 			if (obj !== null) {
-				obj.setPosition(x, y)
+				obj.setPosition(tx, ty)
 			}
 			return old
 		}
 		return null
-	}
+}
 
 	/** Set the object at the given position.
 	 * 
@@ -257,7 +915,7 @@ class Maze {
 	}
 
 	/** Replies the agent bodies.
-	 * 
+	 *
 	 * @return the agent bodies.
 	 */
 	def getAgentBodies : Collection<AgentBody> {
@@ -265,7 +923,7 @@ class Maze {
 	}
 
 	/** Replies the agent body.
-	 * 
+	 *
 	 * @param id
 	 * @return the body.
 	 */
@@ -273,7 +931,7 @@ class Maze {
 	def getAgentBody(id : UUID) : AgentBody {
 		this.bodies.get(id)
 	}
-
+	
 	/** Replies the accessors for managing the super power of sokoban.
 	 * 
 	 * @param id the id of sokoban.
@@ -287,7 +945,6 @@ class Maze {
 				def resetSuperPower {
 					sokoban.resetSuperPower
 				}
-
 				def decreaseSuperPower {
 					sokoban.decreaseSuperPower
 				}
@@ -330,8 +987,65 @@ class Maze {
 		if (obj instanceof AgentBody) {
 			return false
 		}
+		// Exits are cell properties (not objects), so they're always walkable
 		// Other objects (like pills) are walkable
 		return true
+	}
+	
+	/** Check if a tile is an exit (cell property, not object).
+	 * 
+	 * @param x the x coordinate
+	 * @param y the y coordinate
+	 * @return true if the tile is an exit cell
+	 */
+	@Pure
+	synchronized def isExit(x : int, y : int) : boolean {
+		if (!inBounds(x, y)) {
+			return false
+		}
+		return this.exitPositions.contains(new Point2i(x, y))
+	}
+	
+	/** Get all exit positions in the maze.
+	 * 
+	 * @return list of exit positions
+	 */
+	@Pure
+	synchronized def getExits : List<Point2i> {
+		return new ArrayList<Point2i>(this.exitPositions)
+	}
+	
+	/** Add an exit position to the maze.
+	 * 
+	 * @param x the x coordinate
+	 * @param y the y coordinate
+	 * @return true if the exit was added successfully
+	 */
+	synchronized def addExit(x : int, y : int) : boolean {
+		var p = findRandomEmptyInnerCell(true) // empty cell, not already an exit
+		if (p !== null) {
+			this.exitPositions.add(p)
+			return true
+		}
+		return false
+	}
+
+	/** Get all boxes in the maze.
+	 * 
+	 * @return list of all BoxObject instances
+	 */
+	@Pure
+	synchronized def getAllBoxes : List<BoxObject> {
+		var boxes = new ArrayList<BoxObject>
+		for (i : 0..<this.width) {
+			for (j : 0..<this.height) {
+				var obj = this.grid.get(i).get(j)
+				if (obj instanceof BoxObject) {
+					boxes += obj
+				}
+			}
+		}
+		return boxes
 	}
 
 	/** Check if a tile contains a box.
@@ -374,18 +1088,33 @@ class Maze {
 		this.grid.get(fromX).set(fromY, destObj)
 		this.grid.get(toX).set(toY, box)
 		box.setPosition(toX, toY)
+		
+		// Update box's onTarget status based on new position
+		if (box instanceof BoxObject) {
+			(box as BoxObject).updateOnTargetStatus
+		}
+		
 		if (destObj !== null) {
 			destObj.setPosition(fromX, fromY)
 		}
 		return true
 	}
 
-	/** Move the player by the given delta.
+	/** Move the player with Sokoban physics rules.
+	 * 
+	 * Sokoban movement rules:
+	 * 1. Player can move into empty cell → move player
+	 * 2. Player moves into box → push box if cell behind box is empty/target
+	 * 3. Box cannot be pushed into wall or another box → movement blocked
+	 * 4. One action = one grid step (no diagonal movement)
+	 * 
+	 * This implements state transformation: every move changes the world configuration.
+	 * Some moves are irreversible (deadlocks).
 	 * 
 	 * @param playerBody the player body to move
-	 * @param dx delta x
-	 * @param dy delta y
-	 * @return true if the player was successfully moved
+	 * @param dx delta x (-1, 0, or 1)
+	 * @param dy delta y (-1, 0, or 1)
+	 * @return true if the player was successfully moved (state changed)
 	 */
 	synchronized def movePlayer(playerBody : AgentBody, dx : int, dy : int) : boolean {
 		if (playerBody === null) {
@@ -396,11 +1125,11 @@ class Maze {
 		var oldY = pos.y
 		var newX = oldX + dx
 		var newY = oldY + dy
-
+		
 		if (!inBounds(newX, newY)) {
 			return false
 		}
-
+		
 		// Check if the destination is walkable
 		if (!isWalkable(newX, newY)) {
 			// If there's a box, try to push it
@@ -433,7 +1162,7 @@ class Maze {
 			}
 			return false
 		}
-
+		
 		// Destination is walkable, move the player
 		var destObj = this.grid.get(newX).get(newY)
 		// Clear old position
@@ -452,34 +1181,6 @@ class Maze {
 		return true
 	}
 
-	/** 
-	 * @author $Author: sgalland$
-	 * @version $FullVersion$
-	 * @mavengroupid $GroupId$
-	 * @mavenartifactid $ArtifactId$
-	 */
-	private static class PrimWall {
-
-		public val passage : Point2i
-		public val corridor : Point2i
-		public val passageCandidate1 : Point2i
-		public val passageCandidate2 : Point2i
-		public val passageCandidate3 : Point2i
-
-		new (passageX : int, passageY : int, corridorX : int, corridorY : int, passageCandidateX1 : int,
-			passageCandidateY1 : int, passageCandidateX2 : int, passageCandidateY2 : int, passageCandidateX3 : int,
-			passageCandidateY3 : int) {
-			this.passage = new Point2i(passageX, passageY)
-			this.corridor = new Point2i(corridorX, corridorY)
-			this.passageCandidate1 = new Point2i(passageCandidateX1, passageCandidateY1)
-			this.passageCandidate2 = new Point2i(passageCandidateX2, passageCandidateY2)
-			this.passageCandidate3 = new Point2i(passageCandidateX3, passageCandidateY3)
-		}
-
-		def toString : String {
-			"passage=" + this.passage + "|corridor=" + this.corridor
-		}
-
-	}
+	// Removed: PrimWall class - no longer needed with simple Sokoban layout
 
 }

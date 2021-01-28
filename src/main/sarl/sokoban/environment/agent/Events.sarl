@@ -95,3 +95,309 @@ event RunBeginingOfStep
  * @mavenartifactid $ArtifactId$
  */
 event sokobanIsDead
+
+/** Event to announce discovery of a box.
+ * 
+ * Agents emit this event when they discover a box during exploration phase.
+ * Other agents update their global knowledge when receiving this event.
+ */
+event BoxDiscovered extends Event {
+	val boxPosition : Point2i
+	val discovererId : UUID
+	
+	new (boxPosition : Point2i, discovererId : UUID) {
+		this.boxPosition = boxPosition
+		this.discovererId = discovererId
+	}
+}
+
+/** Event to announce discovery of an exit.
+ * 
+ * Agents emit this event when they discover an exit during exploration phase.
+ * Other agents update their global knowledge when receiving this event.
+ */
+event ExitDiscovered extends Event {
+	val exitPosition : Point2i
+	val discovererId : UUID
+	
+	new (exitPosition : Point2i, discovererId : UUID) {
+		this.exitPosition = exitPosition
+		this.discovererId = discovererId
+	}
+}
+
+/** Event providing initial knowledge of all boxes and exits.
+ * 
+ * Emitted by Environment at initialization to provide all box and exit positions
+ * to all agents. This enables decentralized coordination without exploration.
+ */
+event InitialKnowledge extends Event {
+	val boxPositions : List<Point2i>
+	val exitPositions : List<Point2i>
+	
+	new (boxPositions : List<Point2i>, exitPositions : List<Point2i>) {
+		this.boxPositions = boxPositions
+		this.exitPositions = exitPositions
+	}
+}
+
+/** Event to announce that an agent is claiming a box.
+ * 
+ * Agents emit this event when they select a box to work on.
+ * Other agents observe this to avoid selecting the same box.
+ * This is decentralized coordination - no central authority.
+ */
+event BoxClaimed extends Event {
+	val boxPosition : Point2i
+	val claimerId : UUID
+	
+	new (boxPosition : Point2i, claimerId : UUID) {
+		this.boxPosition = boxPosition
+		this.claimerId = claimerId
+	}
+}
+
+/** Event to broadcast agent position for blocking detection.
+ * 
+ * Agents emit this event periodically to inform others of their position.
+ * This enables decentralized blocking detection without central control.
+ */
+event AgentPositionBroadcast extends Event {
+	val agentId : UUID
+	val position : Point2i
+	val targetBox : Point2i  // Box this agent is targeting (null if none)
+	val phase : String  // Current behavior phase
+	
+	new (agentId : UUID, position : Point2i, targetBox : Point2i, phase : String) {
+		this.agentId = agentId
+		this.position = position
+		this.targetBox = targetBox
+		this.phase = phase
+	}
+}
+
+/** Event to announce box position update.
+ * 
+ * Agents emit this when they push a box to update global knowledge.
+ */
+event BoxPositionUpdate extends Event {
+	val oldPosition : Point2i
+	val newPosition : Point2i
+	val boxId : UUID  // Identifier for the box
+	
+	new (oldPosition : Point2i, newPosition : Point2i, boxId : UUID) {
+		this.oldPosition = oldPosition
+		this.newPosition = newPosition
+		this.boxId = boxId
+	}
+}
+
+/** Event to announce that a box has been completed (placed on an exit).
+ * 
+ * Agents emit this event when they confirm a box is on an exit.
+ * Other agents observe this to update their state and stop working on the completed box.
+ * This is decentralized coordination - no central authority.
+ */
+event BoxCompleted extends Event {
+	val boxPosition : Point2i
+	val completerId : UUID
+	
+	new (boxPosition : Point2i, completerId : UUID) {
+		this.boxPosition = boxPosition
+		this.completerId = completerId
+	}
+}
+
+/** Event to share a planned path proposal during coordination.
+ * 
+ * Agents emit this event during the PLANNING phase to propose handling a box.
+ * Other agents use this to compare efficiency and negotiate assignments.
+ */
+event PathProposal extends Event {
+	val agentId : UUID
+	val boxPosition : Point2i
+	val exitPosition : Point2i
+	val pathLength : int  // Number of steps in path from box to exit
+	val efficiencyScore : double  // Calculated efficiency (lower is better)
+	val estimatedSteps : int  // Total steps: alignment + path + pushing
+	
+	new (agentId : UUID, boxPosition : Point2i, exitPosition : Point2i, pathLength : int, efficiencyScore : double, estimatedSteps : int) {
+		this.agentId = agentId
+		this.boxPosition = boxPosition
+		this.exitPosition = exitPosition
+		this.pathLength = pathLength
+		this.efficiencyScore = efficiencyScore
+		this.estimatedSteps = estimatedSteps
+	}
+}
+
+/** Event to respond to a path proposal during negotiation.
+ * 
+ * Agents emit this event during the NEGOTIATION phase to accept or reject proposals.
+ * This enables decentralized coordination and optimal box assignment.
+ */
+event ProposalResponse extends Event {
+	val proposalAgentId : UUID
+	val boxPosition : Point2i
+	val accepted : boolean
+	val responderId : UUID
+	val alternativeScore : double  // If rejected, show alternative efficiency
+	
+	new (proposalAgentId : UUID, boxPosition : Point2i, accepted : boolean, responderId : UUID, alternativeScore : double) {
+		this.proposalAgentId = proposalAgentId
+		this.boxPosition = boxPosition
+		this.accepted = accepted
+		this.responderId = responderId
+		this.alternativeScore = alternativeScore
+	}
+}
+
+/** Event to form a team for working on a box together.
+ * 
+ * Agents emit this event to initiate collaborative work on a box.
+ * Other agents can join the team to work together.
+ * All agents are equal collaborators (no leader concept).
+ */
+event BoxTaskFormation extends Event {
+	val boxPosition : Point2i
+	val exitPosition : Point2i
+	val initiatorId : UUID  // Agent who initiated the task (not a leader, just the initiator)
+	val teamMembers : List<UUID>  // All agents working on this box
+	val plannedPath : List<Point2i>  // Shared path from box to exit
+	val efficiencyScore : double  // Best efficiency score for this task
+	
+	new (boxPosition : Point2i, exitPosition : Point2i, initiatorId : UUID, teamMembers : List<UUID>, plannedPath : List<Point2i>, efficiencyScore : double) {
+		this.boxPosition = boxPosition
+		this.exitPosition = exitPosition
+		this.initiatorId = initiatorId
+		this.teamMembers = teamMembers
+		this.plannedPath = plannedPath
+		this.efficiencyScore = efficiencyScore
+	}
+}
+
+/** Event for agents to join an existing box task.
+ * 
+ * Agents emit this event to join a team working on a box.
+ */
+event JoinBoxTask extends Event {
+	val boxPosition : Point2i
+	val agentId : UUID
+	val agentPosition : Point2i
+	
+	new (boxPosition : Point2i, agentId : UUID, agentPosition : Point2i) {
+		this.boxPosition = boxPosition
+		this.agentId = agentId
+		this.agentPosition = agentPosition
+	}
+}
+
+/** Event to signal agent is ready to push.
+ * 
+ * Agents emit this event when they are in position and ready to push the box.
+ */
+event ReadyToPush extends Event {
+	val boxPosition : Point2i
+	val agentId : UUID
+	val pushPosition : Point2i  // Where agent is positioned
+	val pushDirection : Direction  // Direction to push
+	
+	new (boxPosition : Point2i, agentId : UUID, pushPosition : Point2i, pushDirection : Direction) {
+		this.boxPosition = boxPosition
+		this.agentId = agentId
+		this.pushPosition = pushPosition
+		this.pushDirection = pushDirection
+	}
+}
+
+/** Event to coordinate synchronized push action.
+ * 
+ * Team leader emits this event when all team members are ready to push together.
+ */
+event CoordinatedPush extends Event {
+	val boxPosition : Point2i
+	val pushDirection : Direction
+	val teamLeaderId : UUID
+	val readyAgents : List<UUID>  // Agents ready to push
+	
+	new (boxPosition : Point2i, pushDirection : Direction, teamLeaderId : UUID, readyAgents : List<UUID>) {
+		this.boxPosition = boxPosition
+		this.pushDirection = pushDirection
+		this.teamLeaderId = teamLeaderId
+		this.readyAgents = readyAgents
+	}
+}
+
+/** Event to announce individual box assignment after coordination.
+ * 
+ * After agents coordinate to plan paths, each box is assigned to ONE agent.
+ * This event announces which agent is responsible for pushing a specific box.
+ * Other agents observe this to avoid selecting the same box and continue coordinating remaining boxes.
+ */
+event BoxAssignment extends Event {
+	val boxPosition : Point2i
+	val assignedAgentId : UUID
+	val exitPosition : Point2i
+	val plannedPath : List<Point2i>
+	
+	new (boxPosition : Point2i, assignedAgentId : UUID, exitPosition : Point2i, plannedPath : List<Point2i>) {
+		this.boxPosition = boxPosition
+		this.assignedAgentId = assignedAgentId
+		this.exitPosition = exitPosition
+		this.plannedPath = plannedPath
+	}
+}
+
+/** Event to visualize planned paths for debugging.
+ * 
+ * Agents emit this event when they plan a path to push a box.
+ * The GUI uses this to display visual trails showing the planned path.
+ */
+event PathVisualization extends Event {
+	val boxPosition : Point2i
+	val exitPosition : Point2i
+	val plannedPath : List<Point2i>
+	val agentId : UUID
+	
+	new (boxPosition : Point2i, exitPosition : Point2i, plannedPath : List<Point2i>, agentId : UUID) {
+		this.boxPosition = boxPosition
+		this.exitPosition = exitPosition
+		this.plannedPath = plannedPath
+		this.agentId = agentId
+	}
+}
+
+/** Event to announce collaborative box task with multiple agents.
+ * 
+ * Agents emit this event when they form a team to push a box together.
+ * One agent is PUSHER, another is HELPER - both execute immediately without waiting.
+ */
+event CollaborativeBoxTask extends Event {
+	val boxPosition : Point2i
+	val teamMembers : List<UUID>  // All agents working on this box
+	val exitPosition : Point2i
+	val plannedPath : List<Point2i>
+	
+	new (boxPosition : Point2i, teamMembers : List<UUID>, exitPosition : Point2i, plannedPath : List<Point2i>) {
+		this.boxPosition = boxPosition
+		this.teamMembers = teamMembers
+		this.exitPosition = exitPosition
+		this.plannedPath = plannedPath
+	}
+}
+
+/** Event to signal helper agent is ready to assist pushing.
+ * 
+ * Helper agents emit this when they're in position (informational only - no waiting).
+ */
+event ReadyToHelp extends Event {
+	val helperId : UUID
+	val boxPosition : Point2i
+	val pushDirection : Direction
+	
+	new (helperId : UUID, boxPosition : Point2i, pushDirection : Direction) {
+		this.helperId = helperId
+		this.boxPosition = boxPosition
+		this.pushDirection = pushDirection
+	}
+}
