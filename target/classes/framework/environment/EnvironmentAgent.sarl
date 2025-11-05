@@ -1,0 +1,117 @@
+/* 
+ * $Id$
+ * 
+ * Copyright (c) 2014-17 Stephane GALLAND <stephane.galland@utbm.fr>.
+ * 
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ * 
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ * 
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * This program is free software; you can redistribute it and/or modify
+ */
+package framework.environment
+
+import framework.time.TimePercept
+import io.sarl.api.core.Behaviors
+import io.sarl.api.core.DefaultContextInteractions
+import io.sarl.api.core.Initialize
+import io.sarl.api.core.Lifecycle
+import io.sarl.lang.core.Address
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import io.sarl.api.core.spaces.OpenEventSpace
+
+/** This agent is managing the physic space. 
+ *
+ * @author St&eacute;phane GALLAND &lt;stephane.galland@utbm.fr&gt;
+ */
+agent EnvironmentAgent {
+	
+	uses DefaultContextInteractions, Lifecycle, Behaviors
+
+	var environment : Environment
+	var ^space : OpenEventSpace
+	var myAdr : Address
+	
+	val influences = new AtomicInteger(0)
+	
+	val freeze = new AtomicBoolean(false)
+	
+	@SuppressWarnings("potential_inefficient_value_conversion")
+	on Initialize {
+		this.environment = (occurrence.parameters.get(0) as Environment);
+		var spaceId = (occurrence.parameters.get(1) as UUID);
+		this.^space = defaultContext.getSpace(spaceId)
+		this.^space.registerStrongParticipant(asEventListener)
+		this.myAdr = this.^space.getAddress(ID)
+		emit(new SimulationAgentReady)
+	}
+	
+	on InfluenceEvent [!freeze.get] {
+		for(influence : occurrence.influences) {
+			var id = influence.emitter
+			if (id === null) {
+				id = occurrence.source.ID
+			}
+			var body = this.environment.getAgentBodyFor(id)
+			body.influence(influence)
+		}
+		var v = this.influences.incrementAndGet
+		if (v >= this.environment.getAgentBodyNumber()) {
+			runEnvironmentBehavior
+		}
+	}
+	
+	on StopSimulation {
+		killMe
+	}
+	
+	on StartSimulation {
+		runEnvironmentBehavior
+	}
+	
+	@SuppressWarnings("discouraged_reference")
+	def runEnvironmentBehavior {
+		this.freeze.set(true)
+		try {
+			this.influences.set(0) 
+			this.environment.runBehaviour
+			var delay = this.environment.timeManager.simulationDelay as long
+			if (delay > 0) {
+				Thread::sleep(delay)
+			}
+		} finally {
+			this.freeze.set(false)
+		}
+		notifyAgentsOrDie
+	}
+	
+	def notifyAgentsOrDie {
+		var run = false
+		val timePercept = new TimePercept(
+			this.environment.timeManager.currentTime,
+			this.environment.timeManager.lastStepDuration)
+		for(body : this.environment.agentBodies) {
+			run = true
+			var ^event = new PerceptionEvent(
+				body.perceivedObjects,
+				new Percept(body),
+				timePercept)
+			this.^space.emit(this.myAdr.ID, ^event) [it.ID == body.ID]
+		}
+		if (!run) {
+			killMe
+		}
+	}
+	
+}

@@ -1,0 +1,113 @@
+/* 
+ * $Id$
+ * 
+ * Copyright (c) 2015-17 Stephane GALLAND.
+ * 
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ * 
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ * 
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * This program is free software; you can redistribute it and/or modify
+ */
+package sokoban.environment.^agent
+
+import sokoban.environment.maze.Direction
+import io.sarl.lang.core.EventListener
+import io.sarl.lang.core.SpaceID
+import java.util.UUID
+import io.sarl.api.core.spaces.OpenEventSpace
+
+/** Abstract implementation of a distributed space.
+ *
+ * @author $Author: sgalland$
+ * @version $FullVersion$
+ * @mavengroupid $GroupId$
+ * @mavenartifactid $ArtifactId$
+ */
+package class DefaultMazeSpaceImpl implements MazeSpace {
+
+	var creator : EventListener
+
+	var communicationSpace : OpenEventSpace
+	
+	var spaceID : SpaceID
+	
+	/**
+	 * @param id - the identifier of the space.
+	 * @param commmunicationSpace - the communication space.
+	 */
+	new (id : SpaceID, communicationSpace : OpenEventSpace, creator : EventListener) {
+		assert communicationSpace !== null
+		this.creator = creator
+		this.communicationSpace = communicationSpace
+		this.spaceID = id
+		if (this.creator !== null) {
+			this.communicationSpace.unregister(this.creator)
+			this.communicationSpace.registerStrongParticipant(this.creator)
+		}
+	}
+
+	def destroy {
+		if(this.creator !== null) {
+			this.communicationSpace.unregister(this.creator)
+		}
+	}
+
+	def spawnBody(binder : EventListener) {
+		this.communicationSpace.unregister(binder);
+		this.communicationSpace.registerStrongParticipant(binder);
+	}
+
+	def killBody(binder : EventListener) {
+		this.communicationSpace.unregister(binder)
+	}
+
+	def notifyPerception(sender : UUID, perception : Perception) {
+		var id = perception.bodyId
+		this.communicationSpace.emit(sender, perception) [it.ID == id]
+	}
+
+	def influence(influenceTime : int, emitter : UUID, influence : Direction) {
+		var ^event = new Action(influenceTime, influence)
+		this.communicationSpace.emit(emitter, ^event) [it.ID == this.creator.ID]
+	}
+
+	@Deprecated
+	def getID : SpaceID {
+		return this.spaceID
+	}
+
+	def getSpaceID : SpaceID {
+		return this.spaceID
+	}
+	
+	def forEachStrongParticipant(callback : (UUID)=>void) {
+		this.communicationSpace.forEachStrongParticipant(callback)
+	}
+	
+	def forEachWeakParticipant(callback : (UUID)=>void) {
+		this.communicationSpace.forEachWeakParticipant(callback)
+	}
+	
+	def getNumberOfStrongParticipants : int {
+		this.communicationSpace.numberOfStrongParticipants
+	}
+	
+	def getNumberOfWeakParticipants : int {
+		this.communicationSpace.numberOfWeakParticipants
+	}
+	
+	def isPseudoEmpty(id : UUID) : boolean {
+		this.communicationSpace.isPseudoEmpty(id)
+	}
+	
+}

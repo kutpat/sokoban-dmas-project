@@ -1,0 +1,108 @@
+/* 
+ * $Id$
+ * 
+ * Copyright (c) 2014-17 Stephane GALLAND <stephane.galland@utbm.fr>.
+ * 
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ * 
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ * 
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * This program is free software; you can redistribute it and/or modify
+ */
+package framework
+
+import framework.environment.DynamicType
+import framework.environment.Environment
+import framework.environment.StopSimulation
+import framework.gui.FrameworkGUI
+import framework.util.SpawnMapping
+import io.sarl.api.core.DefaultContextInteractions
+import io.sarl.api.core.Initialize
+import io.sarl.api.core.Lifecycle
+import java.util.List
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * Launcher of the simulation framework.
+ *
+ * This launcher needs the {@link http://www.janusproject.io Janus platform}.
+ * 
+ * @author St&eacute;phane GALLAND &lt;stephane.galland@utbm.fr&gt;
+ * @version $Name$ $Revision$ $Date$
+ */
+abstract agent FrameworkLauncher {
+
+	uses Lifecycle, DefaultContextInteractions
+
+	var uiSingleton : FrameworkGUI
+
+	var environmentSingleton : Environment
+
+	val canStop = new AtomicBoolean(false)
+
+	on Initialize {
+		if (!initializeSimulation(occurrence.parameters)) {
+			killMe
+		}
+	}
+
+	abstract def initializeSimulation(parameters : List<Object>) : boolean
+
+	final def initializeSimulation(environment : Environment,
+		behaviorType : DynamicType, gui : FrameworkGUI, parameters : List<Object>,
+		spawnMapping : SpawnMapping) : boolean {
+		var environmentInteractionSpace = UUID::randomUUID
+
+		uiSingleton = gui
+		environmentSingleton = environment
+
+		var params = <Object>newArrayList
+		params += #[
+			environmentSingleton,
+			environmentInteractionSpace,
+			spawnMapping,
+			behaviorType
+		]
+		params += parameters
+
+		typeof(SimulatorAgent).spawn(params.toArray)
+
+		if (uiSingleton !== null) {
+			if (environmentSingleton !== null) {
+				environmentSingleton.addEnvironmentListener(uiSingleton)
+			}
+			uiSingleton.terminationHandler = [
+				stopSimulation
+			]
+			uiSingleton.visible = true
+		}
+		canStop.set(true)
+		return true
+	}
+
+	def stopSimulation {
+		emit(new StopSimulation)
+
+		if (uiSingleton !== null) {
+			uiSingleton.visible = false
+			if (environmentSingleton !== null) {
+				environmentSingleton.removeEnvironmentListener(uiSingleton)
+			}
+			uiSingleton.dispose
+		}
+		environmentSingleton = null
+		uiSingleton = null
+		killMe
+	}
+
+}
