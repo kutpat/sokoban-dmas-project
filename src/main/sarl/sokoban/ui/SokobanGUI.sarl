@@ -38,6 +38,7 @@ import java.awt.Color
 import java.awt.Dimension
 import java.awt.Graphics
 import java.awt.Graphics2D
+import java.awt.^event.ActionEvent
 import java.awt.^event.KeyEvent
 import java.awt.^event.KeyListener
 import java.awt.RenderingHints
@@ -46,6 +47,7 @@ import java.util.Map
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import javax.imageio.ImageIO
+import javax.swing.AbstractAction
 import javax.swing.BoxLayout
 import javax.swing.ImageIcon
 import javax.swing.JButton
@@ -53,6 +55,8 @@ import javax.swing.JFrame
 import javax.swing.JOptionPane
 import javax.swing.JPanel
 import javax.swing.JScrollPane
+import javax.swing.JComponent
+import javax.swing.KeyStroke
 
 /** 
  * Swing UI for the sokoban game. 
@@ -114,10 +118,11 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 		var topPanel = new JPanel
 		topPanel.layout = new BoxLayout(topPanel, BoxLayout::X_AXIS)
 		topPanel.add(this.startButton)
-		this.gridPanel = new GridPanel
-		this.gridPanel.focusable = true
-		this.gridPanel.addKeyListener(this)
-		var sc = new JScrollPane(this.gridPanel)
+                this.gridPanel = new GridPanel
+                this.gridPanel.focusable = true
+                this.gridPanel.addKeyListener(this)
+                installMovementKeyBindings
+                var sc = new JScrollPane(this.gridPanel)
 		this.contentPane.layout = new BorderLayout
 		this.contentPane.add(BorderLayout::NORTH, topPanel)
 		this.contentPane.add(BorderLayout::CENTER, sc)
@@ -180,28 +185,22 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 		}
 	}
 
-	def keyPressed(e : KeyEvent) {
-		var player : Player
-		synchronized (this) {
-			player = this.player
-		}
-		if (player !== null) {
-			switch (e.keyCode) {
-				case KeyEvent::VK_LEFT:
-					player.move(Direction::WEST)
-				case KeyEvent::VK_RIGHT:
-					player.move(Direction::EAST)
-				case KeyEvent::VK_UP:
-					player.move(Direction::NORTH)
-				case KeyEvent::VK_DOWN:
-					player.move(Direction::SOUTH)
-			}
-		}
-	}
+        def keyPressed(e : KeyEvent) {
+                switch (e.keyCode) {
+                        case KeyEvent::VK_LEFT:
+                                requestMove(Direction::WEST)
+                        case KeyEvent::VK_RIGHT:
+                                requestMove(Direction::EAST)
+                        case KeyEvent::VK_UP:
+                                requestMove(Direction::NORTH)
+                        case KeyEvent::VK_DOWN:
+                                requestMove(Direction::SOUTH)
+                }
+        }
 
-	def keyReleased(e : KeyEvent) {
-		//
-	}
+        def keyReleased(e : KeyEvent) {
+                //
+        }
 
 	def keyTyped(e : KeyEvent) {
 		//
@@ -378,6 +377,37 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
                         g2d.fillOval(px + (CELL_WIDTH - dotD) / 2, py + (CELL_HEIGHT - dotD) / 2, dotD, dotD)
                 }
 
+        }
+
+        private def installMovementKeyBindings {
+                val inputMap = this.gridPanel.getInputMap(JComponent::WHEN_IN_FOCUSED_WINDOW)
+                val actionMap = this.gridPanel.actionMap
+
+                def addBinding(actionId : String, direction : Direction, keyCodes : int*) {
+                        actionMap.put(actionId, new AbstractAction {
+                                override actionPerformed(e : ActionEvent) {
+                                        requestMove(direction)
+                                }
+                        })
+                        for (code : keyCodes) {
+                                inputMap.put(KeyStroke::getKeyStroke(code, 0), actionId)
+                        }
+                }
+
+                addBinding("moveWest", Direction::WEST, KeyEvent::VK_LEFT, KeyEvent::VK_A)
+                addBinding("moveEast", Direction::EAST, KeyEvent::VK_RIGHT, KeyEvent::VK_D)
+                addBinding("moveNorth", Direction::NORTH, KeyEvent::VK_UP, KeyEvent::VK_W)
+                addBinding("moveSouth", Direction::SOUTH, KeyEvent::VK_DOWN, KeyEvent::VK_S)
+        }
+
+        private def requestMove(direction : Direction) {
+                var player : Player
+                synchronized (this) {
+                        player = this.player
+                }
+                if (player !== null) {
+                        player.move(direction)
+                }
         }
 
 }
