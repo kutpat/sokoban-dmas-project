@@ -40,7 +40,8 @@ import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.^event.KeyEvent
 import java.awt.^event.KeyListener
-import java.awt.geom.Path2D
+import java.awt.RenderingHints
+import java.lang.Math
 import java.util.Map
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -214,14 +215,32 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 	 * @mavengroupid $GroupId$
 	 * @mavenartifactid $ArtifactId$
 	 */
-	private static class GridPanel extends JPanel {
+        private static class GridPanel extends JPanel {
 
-		var objects : Map<Point2i, sokobanObject>
-		var time = new AtomicInteger
+                static val FLOOR_BASE = new Color(224, 215, 200)
+                static val FLOOR_NOISE1 = new Color(236, 229, 215)
+                static val FLOOR_NOISE2 = new Color(210, 200, 184)
+                static val WALL_BASE = new Color(125, 117, 103)
+                static val WALL_EDGE = new Color(87, 80, 69)
+                static val WALL_LIGHT = new Color(160, 151, 136)
+                static val CRATE_BASE = new Color(176, 134, 84)
+                static val CRATE_EDGE = new Color(111, 80, 42)
+                static val CRATE_STRAP = new Color(79, 55, 31)
+                static val GOAL_BASE = new Color(171, 206, 187)
+                static val GOAL_RING = new Color(39, 110, 88)
+                static val SHADOW = new Color(0, 0, 0, 45)
+                static val WORKER_BODY = new Color(63, 116, 184)
+                static val WORKER_OUTLINE = new Color(26, 48, 76)
+                static val WORKER_HELMET = new Color(243, 192, 56)
+                static val WORKER_SKIN = new Color(241, 218, 189)
+                static val WORKER_STRAP = new Color(226, 238, 250, 140)
 
-		new {
-			this.background = Color::BLACK
-		}
+                var objects : Map<Point2i, sokobanObject>
+                var time = new AtomicInteger
+
+                new {
+                        this.background = Color::BLACK
+                }
 
 		def setObjects(time : int, objects : Map<Point2i, sokobanObject>) {
 			synchronized (this.treeLock) {
@@ -236,99 +255,129 @@ class sokobanGUI extends JFrame implements KeyListener, EnvironmentListener {
 
 			var px : int
 			var py : int
-			var g2d = g as Graphics2D
+                        var g2d = g as Graphics2D
+                        g2d.setRenderingHint(RenderingHints::KEY_ANTIALIASING, RenderingHints::VALUE_ANTIALIAS_ON)
 
-			var isEvenTime = (this.time.get % 2) == 0
+                        var isEvenTime = (this.time.get % 2) == 0
 
-			if (this.objects !== null) {
-				for (entry : this.objects.entrySet) {
-					var pos = entry.key
-					var obj = entry.value
-					px = CELL_WIDTH * pos.x
-					py = CELL_HEIGHT * pos.y
-					if (obj instanceof WallObject) {
-						g2d.color = Color::BLUE
-						g2d.fillRect(px, py, CELL_WIDTH, CELL_HEIGHT)
-					} else if (obj instanceof sokobanBody) {
-						if (obj.supersokoban) {
-							g2d.color = Color::MAGENTA
-						} else {
-							g2d.color = Color::YELLOW
-						}
-						if (isEvenTime) {
-							g2d.fillArc(px + 1, py + 1, CELL_WIDTH - 2, CELL_HEIGHT - 2, 45, 270)
-						} else {
-							g2d.fillArc(px + 1, py + 1, CELL_WIDTH - 2, CELL_HEIGHT - 2, 5, 350)
-						}
-						g2d.color = this.background
-						var eyex = px + DEMI_CELL_WIDTH - 2
-						var eyey = py + DEMI_CELL_HEIGHT / 2 - 2
-						if(!isEvenTime) eyex++
-						g2d.fillOval(eyex, eyey, 4, 4)
-					} else if (obj instanceof GhostBody) {
-						g2d.color = Color::WHITE
+                        if (this.objects !== null) {
+                                for (entry : this.objects.entrySet) {
+                                        var pos = entry.key
+                                        var obj = entry.value
+                                        px = CELL_WIDTH * pos.x
+                                        py = CELL_HEIGHT * pos.y
+                                        drawFloor(g2d, px, py)
+                                        if (obj instanceof WallObject) {
+                                                drawWall(g2d, px, py)
+                                        } else if (obj instanceof sokobanBody) {
+                                                drawWorker(g2d, px, py)
+                                        } else if (obj instanceof GhostBody) {
+                                                drawCrate(g2d, px, py, isEvenTime)
+                                        } else if (obj instanceof PillObject) {
+                                                drawGoal(g2d, px, py, obj.superPill || isEvenTime)
+                                        }
 
-						g2d.fillArc(px + 3, py + 1, CELL_WIDTH - 6, CELL_HEIGHT - 2, 0, 180)
+                                }
+                        }
+                }
 
-						var up = py + DEMI_CELL_HEIGHT
-						var bottom1 = py + CELL_HEIGHT - 2
-						var bottom2 = bottom1 - 4
-						var lleft = px + 3
-						var left = px + DEMI_CELL_WIDTH / 2
-						var middle = px + DEMI_CELL_WIDTH
-						var right = px + DEMI_CELL_WIDTH + DEMI_CELL_WIDTH / 2
-						var rright = px + CELL_WIDTH - 3
-						if (!isEvenTime) {
-							left--
-							middle -= 2
-							bottom2 += 2
-						}
-						val path = new Path2D.Float
-						path.moveTo(lleft, up)
-						path.lineTo(lleft, bottom1)
-						path.lineTo(left, bottom2)
-						path.lineTo(middle, bottom1)
-						path.lineTo(right, bottom2)
-						path.lineTo(rright, bottom1)
-						path.lineTo(rright, up)
-						path.closePath
-						g2d.fill(path)
+                def drawFloor(g2d : Graphics2D, px : int, py : int) {
+                        g2d.color = FLOOR_BASE
+                        g2d.fillRect(px, py, CELL_WIDTH, CELL_HEIGHT)
+                        var pad = Math::max(1, CELL_WIDTH / 12)
+                        g2d.color = FLOOR_NOISE1
+                        g2d.fillRect(px + pad, py + pad, Math::max(1, CELL_WIDTH / 3), Math::max(1, CELL_HEIGHT / 6))
+                        g2d.color = FLOOR_NOISE2
+                        g2d.fillRect(px + CELL_WIDTH - pad - Math::max(2, CELL_WIDTH / 4),
+                                        py + CELL_HEIGHT - pad - Math::max(2, CELL_HEIGHT / 7),
+                                        Math::max(2, CELL_WIDTH / 4), Math::max(1, CELL_HEIGHT / 7))
+                }
 
-						var dx = 0
-						var dy = 0
+                def drawWall(g2d : Graphics2D, px : int, py : int) {
+                        g2d.color = WALL_BASE
+                        g2d.fillRect(px, py, CELL_WIDTH, CELL_HEIGHT)
+                        g2d.color = WALL_LIGHT
+                        g2d.drawLine(px, py, px + CELL_WIDTH - 1, py)
+                        g2d.drawLine(px, py, px, py + CELL_HEIGHT - 1)
+                        g2d.color = WALL_EDGE
+                        g2d.drawLine(px, py + CELL_HEIGHT - 1, px + CELL_WIDTH - 1, py + CELL_HEIGHT - 1)
+                        g2d.drawLine(px + CELL_WIDTH - 1, py, px + CELL_WIDTH - 1, py + CELL_HEIGHT - 1)
+                        g2d.color = new Color(0, 0, 0, 35)
+                        var half = CELL_HEIGHT / 2
+                        var quarter = CELL_WIDTH / 4
+                        g2d.drawLine(px, py + half, px + CELL_WIDTH - 1, py + half)
+                        g2d.drawLine(px + quarter, py, px + quarter, py + half)
+                        g2d.drawLine(px + 2 * quarter, py + half, px + 2 * quarter, py + CELL_HEIGHT - 1)
+                        g2d.drawLine(px + 3 * quarter, py, px + 3 * quarter, py + half)
+                }
 
-						var eyex = px + DEMI_CELL_WIDTH - 5 + dx
-						var eyey = py + DEMI_CELL_HEIGHT / 2 + dy
-						g2d.color = this.background
-						g2d.fillOval(eyex, eyey, 5, 5)
-						g2d.color = Color.WHITE
+                def drawCrate(g2d : Graphics2D, px : int, py : int, glow : boolean) {
+                        g2d.color = SHADOW
+                        g2d.fillRoundRect(px + CELL_WIDTH / 10, py + CELL_HEIGHT / 10,
+                                        CELL_WIDTH - CELL_WIDTH / 7, CELL_HEIGHT - CELL_HEIGHT / 7, 6, 6)
+                        var pad = Math::max(2, CELL_WIDTH / 8)
+                        var w = CELL_WIDTH - 2 * pad
+                        var h = CELL_HEIGHT - 2 * pad
+                        g2d.color = CRATE_BASE
+                        g2d.fillRoundRect(px + pad, py + pad, w, h, 8, 8)
+                        g2d.color = CRATE_EDGE
+                        g2d.drawRoundRect(px + pad, py + pad, w, h, 8, 8)
+                        g2d.color = CRATE_STRAP
+                        var strap = Math::max(2, CELL_WIDTH / 12)
+                        g2d.fillRect(px + pad, py + pad + h / 3, w, strap)
+                        g2d.fillRect(px + pad, py + pad + 2 * h / 3, w, strap)
+                        if (glow) {
+                                g2d.color = new Color(255, 255, 255, 35)
+                                g2d.drawLine(px + pad + 3, py + pad + 3, px + pad + w - 3, py + pad + 3)
+                        }
+                }
 
-						eyex = px + DEMI_CELL_WIDTH + 2 + dx
-						g2d.color = this.background
-						g2d.fillOval(eyex, eyey, 5, 5)
+                def drawWorker(g2d : Graphics2D, px : int, py : int) {
+                        var pad = Math::max(2, CELL_WIDTH / 10)
+                        g2d.color = SHADOW
+                        g2d.fillOval(px + pad + CELL_WIDTH / 10, py + CELL_HEIGHT - pad - CELL_HEIGHT / 5,
+                                        CELL_WIDTH - 2 * pad - CELL_WIDTH / 6, CELL_HEIGHT / 4)
+                        var torsoW = CELL_WIDTH - 2 * pad
+                        var torsoH = (CELL_HEIGHT * 0.55) as int
+                        var torsoX = px + pad
+                        var torsoY = py + CELL_HEIGHT - torsoH - pad
+                        g2d.color = WORKER_BODY
+                        g2d.fillRoundRect(torsoX, torsoY, torsoW, torsoH, pad * 2, pad * 2)
+                        g2d.color = WORKER_OUTLINE
+                        g2d.drawRoundRect(torsoX, torsoY, torsoW, torsoH, pad * 2, pad * 2)
+                        var armW = Math::max(3, CELL_WIDTH / 6)
+                        var armH = Math::max(4, CELL_HEIGHT / 3)
+                        g2d.color = WORKER_BODY
+                        g2d.fillRoundRect(px + pad / 2, torsoY + pad, armW, armH, pad, pad)
+                        g2d.fillRoundRect(px + CELL_WIDTH - pad / 2 - armW, torsoY + pad, armW, armH, pad, pad)
+                        g2d.color = WORKER_STRAP
+                        g2d.fillRect(torsoX + torsoW / 3, torsoY + pad, Math::max(2, torsoW / 6), torsoH - 2 * pad)
+                        var headD = (CELL_WIDTH * 0.45) as int
+                        var headX = px + (CELL_WIDTH - headD) / 2
+                        var headY = torsoY - headD / 2
+                        g2d.color = WORKER_SKIN
+                        g2d.fillOval(headX, headY, headD, headD)
+                        g2d.color = WORKER_OUTLINE
+                        g2d.drawOval(headX, headY, headD, headD)
+                        var helmetH = Math::max(4, (headD * 0.55) as int)
+                        var helmetY = headY - helmetH / 3
+                        g2d.color = WORKER_HELMET
+                        g2d.fillOval(headX, helmetY, headD, helmetH)
+                        g2d.color = WORKER_OUTLINE
+                        g2d.drawOval(headX, helmetY, headD, helmetH)
+                }
 
-					} else if (obj instanceof PillObject) {
-						if (obj.superPill) {
-							g2d.color = Color::MAGENTA
-							if (isEvenTime) {
-								g2d.fillOval(px + DEMI_CELL_WIDTH - 4, py + DEMI_CELL_HEIGHT - 4, 8, 8)
-							} else {
-								g2d.fillOval(px + DEMI_CELL_WIDTH - 5, py + DEMI_CELL_HEIGHT - 5, 10, 10)
-							}
-						} else {
-							g2d.color = Color::WHITE
-							if (isEvenTime) {
-								g2d.fillOval(px + DEMI_CELL_WIDTH - 2, py + DEMI_CELL_HEIGHT - 2, 4, 4)
-							} else {
-								g2d.fillOval(px + DEMI_CELL_WIDTH - 3, py + DEMI_CELL_HEIGHT - 3, 6, 6)
-							}
-						}
-					}
+                def drawGoal(g2d : Graphics2D, px : int, py : int, pulse : boolean) {
+                        g2d.color = GOAL_BASE
+                        g2d.fillRect(px, py, CELL_WIDTH, CELL_HEIGHT)
+                        var ringPad = Math::max(3, CELL_WIDTH / 6)
+                        g2d.color = GOAL_RING
+                        g2d.drawOval(px + ringPad, py + ringPad, CELL_WIDTH - 2 * ringPad, CELL_HEIGHT - 2 * ringPad)
+                        var dotD = Math::max(4, CELL_WIDTH / 4)
+                        if (pulse) dotD += 2
+                        g2d.fillOval(px + (CELL_WIDTH - dotD) / 2, py + (CELL_HEIGHT - dotD) / 2, dotD, dotD)
+                }
 
-				}
-			}
-		}
-
-	}
+        }
 
 }
